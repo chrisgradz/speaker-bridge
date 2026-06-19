@@ -113,6 +113,11 @@ class HlsProxyTests(unittest.TestCase):
                 "https://api.edge-gateway.siriusxm.com/playback/key/v1/00000000-0000-0000-0000-000000000000"
             )
         )
+        self.assertTrue(
+            is_siriusxm_hls_key(
+                "https://siriusxm-priprodlive.akamaized.net/AAC_Data/firstwave/HLS_firstwave_256k_v3/key/1"
+            )
+        )
         self.assertFalse(is_siriusxm_hls_key("https://api.edge-gateway.siriusxm.com/other/key"))
         self.assertFalse(is_siriusxm_hls_key("https://example.test/playback/key/v1/foo"))
 

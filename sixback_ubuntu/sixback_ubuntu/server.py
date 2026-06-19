@@ -578,9 +578,11 @@ def fetch_siriusxm_url(url: str) -> bytes:
 
 def is_siriusxm_hls_key(url: str) -> bool:
     parsed = urlparse(url)
-    return parsed.netloc == "api.edge-gateway.siriusxm.com" and parsed.path.startswith(
-        "/playback/key/"
-    )
+    if parsed.netloc == "api.edge-gateway.siriusxm.com" and parsed.path.startswith("/playback/key/"):
+        return True
+    if parsed.netloc.endswith(".akamaized.net") and "siriusxm" in parsed.netloc:
+        return "/key/" in parsed.path.lower()
+    return False
 
 
 def should_capture_siriusxm_fetch_success(target: str) -> bool:
