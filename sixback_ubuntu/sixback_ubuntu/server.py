@@ -527,7 +527,8 @@ def handle_siriusxm_proxy_playlist(req: SixBackHandler, station_id: str) -> None
             return
     trimmed = trim_hls_playlist(body)
     rewritten = rewrite_hls_playlist(trimmed, stream_url, req.server)
-    capture_cloud_response(req, "siriusxm", summarize_hls_playlist(station_id, rewritten))
+    if should_capture_siriusxm_playlist_success():
+        capture_cloud_response(req, "siriusxm", summarize_hls_playlist(station_id, rewritten))
     req.send_bytes(rewritten.encode("utf-8"), content_type="application/x-mpegURL")
 
 
@@ -591,6 +592,10 @@ def should_capture_siriusxm_fetch_success(target: str) -> bool:
     if is_siriusxm_hls_key(target):
         return False
     return not path.endswith(".aac")
+
+
+def should_capture_siriusxm_playlist_success() -> bool:
+    return False
 
 
 def maybe_capture_siriusxm_fetch_success(req: SixBackHandler, target: str, body: str) -> None:
@@ -1167,11 +1172,19 @@ ADMIN_HTML = """<!doctype html>
 
     function renderSiriusStatus() {
       const session = state.sirius || {};
-      const configured = session.configured ? 'configured' : 'not configured';
-      const loggedIn = session.session_authenticated ? 'authenticated' : 'not authenticated';
       const username = session.username ? ` - ${session.username}` : '';
       const error = session.last_error ? ` - ${session.last_error}` : '';
-      $('siriusStatus').textContent = `${configured}, ${loggedIn}${username}${error}`;
+      const el = $('siriusStatus');
+      if (!session.configured) {
+        el.textContent = 'Missing /etc/sixback-ubuntu/siriusxm.env';
+        el.className = 'meta status warn';
+      } else if (session.session_authenticated) {
+        el.textContent = `Ready${username}${error}`;
+        el.className = 'meta status ok';
+      } else {
+        el.textContent = `Configured; playback will login automatically${username}${error}`;
+        el.className = 'meta status';
+      }
     }
 
     function renderSpeakers() {

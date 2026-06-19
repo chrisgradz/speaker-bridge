@@ -6,6 +6,7 @@ from sixback_ubuntu.sixback_ubuntu.server import (
     SIRIUSXM_HLS_AES_KEY,
     is_siriusxm_hls_key,
     rewrite_hls_playlist,
+    should_capture_siriusxm_playlist_success,
     should_capture_siriusxm_fetch_success,
     summarize_hls_playlist,
     trim_hls_playlist,
@@ -122,6 +123,7 @@ class HlsProxyTests(unittest.TestCase):
         self.assertFalse(is_siriusxm_hls_key("https://example.test/playback/key/v1/foo"))
 
     def test_siriusxm_success_capture_policy_skips_noisy_stream_fetches(self) -> None:
+        self.assertFalse(should_capture_siriusxm_playlist_success())
         self.assertFalse(
             should_capture_siriusxm_fetch_success(
                 "https://api.edge-gateway.siriusxm.com/playback/key/v1/00000000-0000-0000-0000-000000000000"

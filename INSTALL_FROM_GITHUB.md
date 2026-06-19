@@ -245,7 +245,8 @@ Follow logs:
 journalctl -u sixback-ubuntu -f
 ```
 
-Check SiriusXM auth status:
+Check SiriusXM auth status. The login command is optional; playback will also
+log in automatically when a SiriusXM preset is pressed after a service restart.
 
 ```bash
 curl http://192.168.1.25:8000/api/siriusxm/session

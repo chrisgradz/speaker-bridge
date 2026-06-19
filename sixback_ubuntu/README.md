@@ -77,7 +77,8 @@ sudo systemctl daemon-reload
 sudo systemctl restart sixback-ubuntu
 ```
 
-Check redacted auth status:
+Check redacted auth status. The login call is optional; playback will also log
+in automatically when a SiriusXM preset is pressed.
 
 ```bash
 curl http://localhost:8000/api/siriusxm/session
@@ -100,7 +101,9 @@ curl -X POST http://localhost:8000/api/siriusxm/channels/firstwave/refresh
 
 The service also refreshes the channel when the speaker requests playback. If
 credentials are configured, the authenticated resolver is preferred over any old
-stored `stream_url`.
+stored `stream_url`. After a `sixback-ubuntu` restart, the next SiriusXM preset
+press performs a fresh login automatically, so a manual login curl is only a
+diagnostic check.
 
 The HAR importer remains in `tools/import_siriusxm_har.py` only as legacy
 diagnostic tooling. It is not part of the normal SiriusXM setup path.
