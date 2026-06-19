@@ -217,6 +217,46 @@ class SiriusXmAuthTests(unittest.TestCase):
         self.assertEqual(status["username"], "l***@example.com")
         self.assertNotIn("secret", repr(status))
 
+    def test_session_get_channels_extracts_nested_channel_dicts(self) -> None:
+        def opener(request):
+            self.assertIn("get/discovery/channel-listing", request.full_url)
+            return json.dumps(
+                {
+                    "ModuleListResponse": {
+                        "moduleList": {
+                            "modules": [
+                                {
+                                    "moduleResponse": {
+                                        "channelListing": {
+                                            "channels": [
+                                                {
+                                                    "channelId": "firstwave",
+                                                    "channelGuid": "65f04311-3581-256c-97b9-279838d6ff5e",
+                                                    "channelName": "1st Wave",
+                                                    "channelNumber": 33,
+                                                }
+                                            ]
+                                        }
+                                    }
+                                }
+                            ]
+                        }
+                    }
+                }
+            ).encode("utf-8")
+
+        session = SiriusXmSession(
+            SiriusXmCredentials("listener@example.com", "secret password"),
+            opener=opener,
+        )
+        session.cookie_jar.set_cookie(make_cookie("JSESSIONID", "session-123"))
+
+        channels = session.get_channels()
+
+        self.assertEqual(len(channels), 1)
+        self.assertEqual(channels[0]["channelId"], "firstwave")
+        self.assertEqual(session.status()["known_channels"], 1)
+
     def test_session_refresh_uses_k2_resolver_and_variant_playlist(self) -> None:
         requests = []
 

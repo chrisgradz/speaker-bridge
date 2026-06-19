@@ -517,7 +517,7 @@ class SiriusXmSession:
         except Exception:
             return []
         channels: list[dict[str, Any]] = []
-        for value in walk_values(data):
+        for value in walk_dicts(data):
             if isinstance(value, dict) and (
                 "channelId" in value or "channelGuid" in value or "channelNumber" in value
             ):
