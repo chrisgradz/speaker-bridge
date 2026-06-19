@@ -20,6 +20,7 @@ from typing import Any, Callable
 from urllib.parse import parse_qs, urljoin, urlparse
 
 from . import __version__
+from . import cloud as cloud_api
 from .cloud import (
     account_full,
     account_presets,
@@ -37,6 +38,7 @@ from .cloud import (
     tunein_token,
 )
 from .db import Store
+from .icy import inspect_icy_stream
 from .speaker import import_presets, migrate_speaker, probe_speaker, select_content_item, store_preset
 from .siriusxm import (
     DEFAULT_ENV_FILE,
@@ -143,6 +145,12 @@ class SixBackServer(ThreadingHTTPServer):
         self.route("GET", r"/api/siriusxm/channels/(?P<station_id>[^/]+)", handle_siriusxm_channel_get)
         self.route("PUT", r"/api/siriusxm/channels/(?P<station_id>[^/]+)", handle_siriusxm_channel_put)
         self.route("POST", r"/api/siriusxm/channels/(?P<station_id>[^/]+)/refresh", handle_siriusxm_channel_refresh)
+        self.route(
+            "GET",
+            r"/api/siriusxm/channels/(?P<station_id>[^/]+)/metadata-proxy-debug",
+            handle_siriusxm_metadata_proxy_debug,
+        )
+        self.route("GET", r"/api/tunein/stations/(?P<station_id>[^/]+)/icy-debug", handle_tunein_icy_debug)
         self.route(
             "GET",
             r"/api/siriusxm/channels/(?P<station_id>[^/]+)/now-playing-debug",
@@ -564,6 +572,85 @@ def handle_siriusxm_now_playing_debug(req: SixBackHandler, station_id: str) -> N
         },
         status,
     )
+
+
+def handle_tunein_icy_debug(req: SixBackHandler, station_id: str) -> None:
+    try:
+        payload = tunein_icy_debug_payload(req.server.store, station_id, req.server.public_base)
+    except Exception as exc:
+        req.send_json({"station_id": station_id, "error": type(exc).__name__, "message": str(exc)}, 502)
+        return
+    req.send_json(payload)
+
+
+def handle_siriusxm_metadata_proxy_debug(req: SixBackHandler, station_id: str) -> None:
+    station_id = resolve_siriusxm_station_alias(req.server.store, station_id)
+    channel = req.server.store.get_siriusxm_channel(station_id)
+    metadata: Json = {}
+    error = ""
+    if req.server.siriusxm.credentials.configured:
+        try:
+            metadata = req.server.siriusxm.now_playing(station_id, channel, force=True)
+        except Exception as exc:
+            error = sanitize_siriusxm_error(str(exc), req.server.siriusxm.credentials)
+    payload = siriusxm_metadata_proxy_debug_payload(req.server.store, station_id, req.server.public_base, metadata)
+    payload["session"] = req.server.siriusxm.status()
+    if error:
+        payload["metadata_error"] = error
+    req.send_json(payload)
+
+
+def tunein_icy_debug_payload(
+    store: Store,
+    station_id: str,
+    base_url: str,
+    inspector: Callable[[str], Json] = inspect_icy_stream,
+) -> Json:
+    resolved = cloud_api._resolve_tunein(station_id)
+    preset = store.find_preset_by_source_station("TUNEIN", station_id)
+    name = resolved.get("name") or (preset.get("name") if preset else "") or station_id
+    stream_url = resolved.get("url") or f"{base_url}/silence.mp3"
+    icy: Json = {}
+    if stream_url.startswith(("http://", "https://")):
+        icy = inspector(stream_url)
+    return {
+        "station_id": station_id,
+        "name": name,
+        "stream_url": stream_url,
+        "tunein": {
+            "media_type": resolved.get("media_type", ""),
+            "image": resolved.get("image", ""),
+        },
+        "icy": icy,
+    }
+
+
+def siriusxm_metadata_proxy_debug_payload(
+    store: Store,
+    station_id: str,
+    base_url: str,
+    metadata: Json | None = None,
+) -> Json:
+    preset = store.find_preset_by_source_station("SIRIUSXM", station_id)
+    channel = store.get_siriusxm_channel(station_id)
+    name = channel.get("name") or (preset.get("name") if preset else "") or station_id
+    stream_url = f"{base_url}/siriusxm/proxy/{urllib.parse.quote(station_id)}/playlist.m3u8"
+    return {
+        "station_id": station_id,
+        "name": name,
+        "transport": "hls",
+        "stream_url": stream_url,
+        "metadata": metadata or {},
+        "icy_metadata_injection_feasible": False,
+        "reason": (
+            "ICY metadata is for continuous streams with an icy-metaint interval. "
+            "SiriusXM playback here is HLS, so simple ICY injection cannot be added to this playlist proxy."
+        ),
+        "next_experiment": (
+            "Test whether the speaker displays timed ID3 metadata inside HLS AAC segments; "
+            "that would require segment rewriting and is separate from ICY metadata."
+        ),
+    }
 
 
 def normalize_siriusxm_channel(body: Json) -> Json:

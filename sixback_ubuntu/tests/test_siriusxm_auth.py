@@ -38,6 +38,8 @@ from sixback_ubuntu.sixback_ubuntu.server import (
     resolve_siriusxm_stream_url,
     resolve_siriusxm_station_alias,
     sanitize_siriusxm_error,
+    siriusxm_metadata_proxy_debug_payload,
+    tunein_icy_debug_payload,
 )
 from sixback_ubuntu.sixback_ubuntu.speaker import preset_to_xml, store_preset_xml
 
@@ -905,6 +907,64 @@ class SiriusXmAuthTests(unittest.TestCase):
         self.assertIn("audio", payload)
         self.assertEqual(payload["audio"]["streamUrl"], "https://stream.example.test/live.mp3")
         self.assertEqual(payload["nowPlaying"]["stationName"]["text"], "The Answer Chicago")
+
+    def test_tunein_icy_debug_payload_inspects_resolved_stream(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Store(os.path.join(tmp, "state.sqlite3"))
+            try:
+                store.set_preset(
+                    "speaker-1",
+                    {
+                        "device_id": "speaker-1",
+                        "slot": 5,
+                        "source": "TUNEIN",
+                        "name": "Metadata Station",
+                        "station_id": "s123",
+                    },
+                )
+                with patch(
+                    "sixback_ubuntu.sixback_ubuntu.cloud._resolve_tunein",
+                    return_value={"url": "https://stream.example.test/live.mp3", "media_type": "mp3"},
+                ):
+                    payload = tunein_icy_debug_payload(
+                        store,
+                        "s123",
+                        "http://ubuntu.example:8000",
+                        inspector=lambda url: {
+                            "stream_url": url,
+                            "icy_metadata_supported": True,
+                            "metadata": {"artist": "Artist", "title": "Song"},
+                        },
+                    )
+            finally:
+                store.conn.close()
+
+        self.assertEqual(payload["station_id"], "s123")
+        self.assertEqual(payload["name"], "Metadata Station")
+        self.assertEqual(payload["stream_url"], "https://stream.example.test/live.mp3")
+        self.assertTrue(payload["icy"]["icy_metadata_supported"])
+        self.assertEqual(payload["icy"]["metadata"]["title"], "Song")
+
+    def test_siriusxm_metadata_proxy_debug_identifies_hls_not_icy(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Store(os.path.join(tmp, "state.sqlite3"))
+            try:
+                store.upsert_siriusxm_channel("firstwave", {"name": "1st Wave"})
+                payload = siriusxm_metadata_proxy_debug_payload(
+                    store,
+                    "firstwave",
+                    "http://ubuntu.example:8000",
+                    {"artistName": "The Cure", "trackName": "Just Like Heaven"},
+                )
+            finally:
+                store.conn.close()
+
+        self.assertEqual(payload["station_id"], "firstwave")
+        self.assertEqual(payload["transport"], "hls")
+        self.assertFalse(payload["icy_metadata_injection_feasible"])
+        self.assertIn("ICY metadata is for continuous streams", payload["reason"])
+        self.assertEqual(payload["metadata"]["trackName"], "Just Like Heaven")
+        self.assertEqual(payload["stream_url"], "http://ubuntu.example:8000/siriusxm/proxy/firstwave/playlist.m3u8")
 
     def test_siriusxm_preset_overwrite_creates_old_station_alias(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

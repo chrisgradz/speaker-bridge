@@ -13,6 +13,7 @@ from sixback_ubuntu.sixback_ubuntu.server import (
     summarize_hls_playlist,
     trim_hls_playlist,
 )
+from sixback_ubuntu.sixback_ubuntu.icy import inspect_icy_stream, parse_icy_metadata_block
 
 
 class FakeServer:
@@ -184,6 +185,71 @@ class HlsProxyTests(unittest.TestCase):
         self.assertEqual(second, b"body-1")
         self.assertEqual(third, b"body-2")
         self.assertEqual(calls, ["https://example.test/live.m3u8", "https://example.test/live.m3u8"])
+
+    def test_parse_icy_metadata_block_extracts_artist_and_title(self) -> None:
+        metadata = parse_icy_metadata_block(b"StreamTitle='The Cure - Just Like Heaven';StreamUrl='';")
+
+        self.assertEqual(metadata["stream_title"], "The Cure - Just Like Heaven")
+        self.assertEqual(metadata["artist"], "The Cure")
+        self.assertEqual(metadata["title"], "Just Like Heaven")
+
+    def test_inspect_icy_stream_reads_first_metadata_packet(self) -> None:
+        class FakeHeaders:
+            def get(self, name: str, default: str = "") -> str:
+                return {"icy-metaint": "4", "content-type": "audio/mpeg"}.get(name.lower(), default)
+
+        class FakeResponse:
+            headers = FakeHeaders()
+            status = 200
+
+            def __init__(self) -> None:
+                raw_metadata = b"StreamTitle='Berlin - The Metro';"
+                padded = raw_metadata + (b"\0" * (16 - len(raw_metadata) % 16))
+                self.body = b"DATA" + bytes([len(padded) // 16]) + padded
+
+            def read(self, size: int = -1) -> bytes:
+                if size < 0:
+                    size = len(self.body)
+                chunk = self.body[:size]
+                self.body = self.body[size:]
+                return chunk
+
+        def opener(request, timeout=8):
+            return FakeResponse()
+
+        result = inspect_icy_stream("https://stream.example.test/live.mp3", opener=opener)
+
+        self.assertTrue(result["icy_metadata_supported"])
+        self.assertEqual(result["metadata"]["artist"], "Berlin")
+        self.assertEqual(result["metadata"]["title"], "The Metro")
+        self.assertEqual(result["content_type"], "audio/mpeg")
+
+    def test_inspect_icy_stream_skips_empty_metadata_packets(self) -> None:
+        class FakeHeaders:
+            def get(self, name: str, default: str = "") -> str:
+                return {"icy-metaint": "4", "content-type": "audio/mpeg"}.get(name.lower(), default)
+
+        class FakeResponse:
+            headers = FakeHeaders()
+            status = 200
+
+            def __init__(self) -> None:
+                raw_metadata = b"StreamTitle='Flying Lizards - Money';"
+                padded = raw_metadata + (b"\0" * (16 - len(raw_metadata) % 16))
+                self.body = b"DATA" + b"\0" + b"MORE" + bytes([len(padded) // 16]) + padded
+
+            def read(self, size: int = -1) -> bytes:
+                if size < 0:
+                    size = len(self.body)
+                chunk = self.body[:size]
+                self.body = self.body[size:]
+                return chunk
+
+        result = inspect_icy_stream("https://stream.example.test/live.mp3", opener=lambda request, timeout=8: FakeResponse())
+
+        self.assertEqual(result["metadata_packets_checked"], 2)
+        self.assertEqual(result["metadata"]["artist"], "Flying Lizards")
+        self.assertEqual(result["metadata"]["title"], "Money")
 
 
 if __name__ == "__main__":
