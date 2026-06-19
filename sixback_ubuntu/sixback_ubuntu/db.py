@@ -39,6 +39,9 @@ CREATE TABLE IF NOT EXISTS siriusxm_channels (
     name TEXT NOT NULL DEFAULT '',
     entity_url TEXT NOT NULL DEFAULT '',
     stream_url TEXT NOT NULL DEFAULT '',
+    stream_expires_at TEXT NOT NULL DEFAULT '',
+    last_refresh_at TEXT NOT NULL DEFAULT '',
+    last_refresh_error TEXT NOT NULL DEFAULT '',
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -68,6 +71,19 @@ class Store:
         self.conn = sqlite3.connect(self.path, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
         self.conn.executescript(SCHEMA)
+        self._migrate()
+
+    def _migrate(self) -> None:
+        columns = {
+            row["name"]
+            for row in self.conn.execute("PRAGMA table_info(siriusxm_channels)").fetchall()
+        }
+        for name in ("stream_expires_at", "last_refresh_at", "last_refresh_error"):
+            if name not in columns:
+                self.conn.execute(
+                    f"ALTER TABLE siriusxm_channels ADD COLUMN {name} TEXT NOT NULL DEFAULT ''"
+                )
+        self.conn.commit()
 
     def upsert_speaker(self, speaker: dict[str, Any]) -> None:
         self.conn.execute(
@@ -206,6 +222,38 @@ class Store:
                 str(data.get("entity_url", "")),
                 str(data.get("stream_url", "")),
             ),
+        )
+        self.conn.commit()
+        return self.get_siriusxm_channel(station_id)
+
+    def update_siriusxm_stream_status(
+        self,
+        station_id: str,
+        stream_url: str | None = None,
+        stream_expires_at: str = "",
+        last_refresh_error: str = "",
+    ) -> dict[str, Any]:
+        values: dict[str, Any] = {
+            "station_id": station_id,
+            "stream_url": stream_url,
+            "stream_expires_at": stream_expires_at,
+            "last_refresh_error": last_refresh_error,
+        }
+        stream_assignment = ""
+        if stream_url is not None:
+            stream_assignment = "stream_url=:stream_url,"
+        self.conn.execute(
+            f"""
+            INSERT INTO siriusxm_channels(station_id, stream_url, stream_expires_at, last_refresh_at, last_refresh_error)
+            VALUES(:station_id, COALESCE(:stream_url, ''), :stream_expires_at, CURRENT_TIMESTAMP, :last_refresh_error)
+            ON CONFLICT(station_id) DO UPDATE SET
+                {stream_assignment}
+                stream_expires_at=:stream_expires_at,
+                last_refresh_at=CURRENT_TIMESTAMP,
+                last_refresh_error=:last_refresh_error,
+                updated_at=CURRENT_TIMESTAMP
+            """,
+            values,
         )
         self.conn.commit()
         return self.get_siriusxm_channel(station_id)

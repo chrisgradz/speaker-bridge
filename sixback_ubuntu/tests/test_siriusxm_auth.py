@@ -1,0 +1,257 @@
+from __future__ import annotations
+
+import os
+import tempfile
+import unittest
+import urllib.error
+import json
+from io import BytesIO
+
+from sixback_ubuntu.sixback_ubuntu.db import Store
+from sixback_ubuntu.sixback_ubuntu.cloud import siriusxm_station
+from sixback_ubuntu.sixback_ubuntu.siriusxm import (
+    SiriusXmCredentials,
+    SiriusXmSession,
+    extract_entity_id,
+    extract_stream_url,
+    load_credentials,
+    redact_secret,
+    should_refresh_stream,
+)
+from sixback_ubuntu.sixback_ubuntu.server import (
+    resolve_siriusxm_stream_url,
+    sanitize_siriusxm_error,
+)
+
+
+class SiriusXmAuthTests(unittest.TestCase):
+    def test_load_credentials_from_env_file_and_redacts_status(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "siriusxm.env")
+            with open(path, "w", encoding="utf-8") as handle:
+                handle.write(
+                    "SIRIUSXM_USERNAME='listener@example.com'\n"
+                    'SIRIUSXM_PASSWORD="secret password"\n'
+                )
+
+            creds = load_credentials(path, environ={})
+
+        self.assertEqual(creds.username, "listener@example.com")
+        self.assertEqual(creds.password, "secret password")
+        self.assertEqual(redact_secret(creds.username), "l***@example.com")
+        self.assertEqual(redact_secret(creds.password), "[set]")
+
+    def test_extract_stream_url_finds_hls_url_in_nested_payload(self) -> None:
+        payload = {
+            "result": {
+                "sets": [
+                    {
+                        "type": "hls",
+                        "url": "https://live-akc-prod-device.streaming.siriusxm.com/v1/session/playlist.m3u8?token=abc",
+                    }
+                ]
+            }
+        }
+
+        self.assertEqual(
+            extract_stream_url(payload),
+            "https://live-akc-prod-device.streaming.siriusxm.com/v1/session/playlist.m3u8?token=abc",
+        )
+
+    def test_extract_entity_id_from_player_url(self) -> None:
+        self.assertEqual(
+            extract_entity_id(
+                "https://www.siriusxm.com/player/channel-linear/entity/65f04311-3581-256c-97b9-279838d6ff5e"
+            ),
+            "65f04311-3581-256c-97b9-279838d6ff5e",
+        )
+
+    def test_refresh_decision_covers_missing_and_auth_errors(self) -> None:
+        self.assertTrue(should_refresh_stream(""))
+        self.assertFalse(should_refresh_stream("https://example.test/live.m3u8"))
+        unauthorized = urllib.error.HTTPError(
+            "https://example.test/live.m3u8",
+            401,
+            "Unauthorized",
+            hdrs={},
+            fp=BytesIO(b""),
+        )
+        server_error = urllib.error.HTTPError(
+            "https://example.test/live.m3u8",
+            500,
+            "Server Error",
+            hdrs={},
+            fp=BytesIO(b""),
+        )
+        try:
+            self.assertTrue(
+                should_refresh_stream(
+                    "https://example.test/live.m3u8",
+                    unauthorized,
+                )
+            )
+            self.assertFalse(
+                should_refresh_stream(
+                    "https://example.test/live.m3u8",
+                    server_error,
+                )
+            )
+        finally:
+            unauthorized.close()
+            server_error.close()
+
+    def test_store_keeps_refresh_metadata_with_channel(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Store(os.path.join(tmp, "state.sqlite3"))
+            store.upsert_siriusxm_channel(
+                "firstwave",
+                {
+                    "name": "1st Wave",
+                    "entity_url": "https://www.siriusxm.com/player/channel-linear/entity/entity-id",
+                    "stream_url": "",
+                },
+            )
+
+            saved = store.update_siriusxm_stream_status(
+                "firstwave",
+                stream_url="https://live.example.test/playlist.m3u8",
+                stream_expires_at="2026-06-19T05:00:00Z",
+                last_refresh_error="",
+            )
+            store.conn.close()
+
+        self.assertEqual(saved["stream_url"], "https://live.example.test/playlist.m3u8")
+        self.assertEqual(saved["stream_expires_at"], "2026-06-19T05:00:00Z")
+        self.assertEqual(saved["last_refresh_error"], "")
+
+    def test_session_status_does_not_expose_password(self) -> None:
+        session = SiriusXmSession(
+            SiriusXmCredentials("listener@example.com", "secret password"),
+            opener=lambda request: b"{}",
+        )
+
+        status = session.status()
+
+        self.assertEqual(status["configured"], True)
+        self.assertEqual(status["username"], "l***@example.com")
+        self.assertNotIn("secret", repr(status))
+
+    def test_session_refresh_uses_k2_resolver_and_variant_playlist(self) -> None:
+        requests = []
+
+        def opener(request):
+            requests.append(request)
+            url = request.full_url
+            if "modify/authentication" in url or "resume" in url:
+                return b'{"ModuleListResponse":{"status":1}}'
+            if "tune/now-playing-live" in url:
+                return json.dumps(
+                    {
+                        "ModuleListResponse": {
+                            "moduleList": {
+                                "modules": [
+                                    {
+                                        "moduleResponse": {
+                                            "liveChannelData": {
+                                                "hlsAudioInfos": [
+                                                    {
+                                                        "size": "LARGE",
+                                                        "url": "%Live_Primary_HLS%/firstwave/master.m3u8",
+                                                    }
+                                                ]
+                                            }
+                                        }
+                                    }
+                                ]
+                            }
+                        }
+                    }
+                ).encode("utf-8")
+            if "master.m3u8" in url:
+                return b"#EXTM3U\nfirstwave_256k.m3u8\n"
+            raise AssertionError(f"unexpected URL {url}")
+
+        session = SiriusXmSession(
+            SiriusXmCredentials("listener@example.com", "secret password"),
+            opener=opener,
+        )
+
+        stream_url = session.refresh_stream_url("firstwave", {})
+
+        self.assertEqual(stream_url, "https://siriusxm-priprodlive.akamaized.net/firstwave/firstwave_256k.m3u8")
+        self.assertTrue(any("modify/authentication" in req.full_url for req in requests))
+        self.assertTrue(any("tune/now-playing-live" in req.full_url for req in requests))
+
+    def test_login_rejects_failed_k2_status(self) -> None:
+        session = SiriusXmSession(
+            SiriusXmCredentials("listener@example.com", "secret password"),
+            opener=lambda request: b'{"ModuleListResponse":{"status":0,"messages":[{"message":"bad login"}]}}',
+        )
+
+        with self.assertRaisesRegex(Exception, "bad login"):
+            session.login()
+
+    def test_server_prefers_authenticated_refresh_over_stored_har_stream(self) -> None:
+        class FakeSession:
+            credentials = SiriusXmCredentials("listener@example.com", "secret password")
+
+            def refresh_stream_url(self, station_id, channel):
+                self.station_id = station_id
+                self.channel = channel
+                return "https://live.example.test/fresh.m3u8"
+
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Store(os.path.join(tmp, "state.sqlite3"))
+            store.upsert_siriusxm_channel(
+                "firstwave",
+                {
+                    "name": "1st Wave",
+                    "entity_url": "https://www.siriusxm.com/player/channel-linear/entity/entity-id",
+                    "stream_url": "https://expired.example.test/from-har.m3u8",
+                },
+            )
+
+            resolved = resolve_siriusxm_stream_url(store, FakeSession(), "firstwave")
+            saved = store.get_siriusxm_channel("firstwave")
+            store.conn.close()
+
+        self.assertEqual(resolved, "https://live.example.test/fresh.m3u8")
+        self.assertEqual(saved["stream_url"], "https://live.example.test/fresh.m3u8")
+
+    def test_siriusxm_station_routes_to_proxy_before_stream_url_exists(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Store(os.path.join(tmp, "state.sqlite3"))
+            store.upsert_siriusxm_channel(
+                "firstwave",
+                {
+                    "name": "1st Wave",
+                    "entity_url": "https://www.siriusxm.com/player/channel-linear/entity/entity-id",
+                    "stream_url": "",
+                },
+            )
+
+            body = siriusxm_station(store, "firstwave", "http://ubuntu.example:8000").decode("utf-8")
+            store.conn.close()
+
+        self.assertIn("http://ubuntu.example:8000/siriusxm/proxy/firstwave/playlist.m3u8", body)
+        self.assertNotIn("/siriusxm/needs-auth/firstwave", body)
+
+    def test_siriusxm_error_sanitizer_removes_secrets_and_queries(self) -> None:
+        message = (
+            "HTTP 403 https://live.example.test/playlist.m3u8?token=abc "
+            "for listener@example.com using secret password"
+        )
+
+        redacted = sanitize_siriusxm_error(
+            message,
+            SiriusXmCredentials("listener@example.com", "secret password"),
+        )
+
+        self.assertNotIn("token=abc", redacted)
+        self.assertNotIn("listener@example.com", redacted)
+        self.assertNotIn("secret password", redacted)
+        self.assertIn("[redacted-url]", redacted)
+
+
+if __name__ == "__main__":
+    unittest.main()

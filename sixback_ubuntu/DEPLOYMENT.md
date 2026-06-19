@@ -129,6 +129,27 @@ sudo cp -a ~/soundtouch/sixback_ubuntu/. /opt/sixback_ubuntu/
 sudo chown -R sixback:sixback /opt/sixback_ubuntu /var/lib/sixback-ubuntu
 ```
 
+Optional but recommended for SiriusXM presets:
+
+```bash
+sudo install -d -m 750 -o root -g sixback /etc/sixback-ubuntu
+sudo nano /etc/sixback-ubuntu/siriusxm.env
+```
+
+Put your SiriusXM streaming login in that file:
+
+```bash
+SIRIUSXM_USERNAME='your-siriusxm-login'
+SIRIUSXM_PASSWORD='your-siriusxm-password'
+```
+
+Then lock it down:
+
+```bash
+sudo chown root:sixback /etc/sixback-ubuntu/siriusxm.env
+sudo chmod 640 /etc/sixback-ubuntu/siriusxm.env
+```
+
 Create `/etc/systemd/system/sixback-ubuntu.service`:
 
 ```bash
@@ -145,6 +166,7 @@ Wants=network-online.target
 
 [Service]
 WorkingDirectory=/opt/sixback_ubuntu
+EnvironmentFile=-/etc/sixback-ubuntu/siriusxm.env
 ExecStart=/usr/bin/python3 -m sixback_ubuntu --host 0.0.0.0 --port 8000 --public-base http://192.168.1.25:8000 --db /var/lib/sixback-ubuntu/state.sqlite3
 Restart=on-failure
 User=sixback
@@ -166,6 +188,13 @@ Follow logs:
 
 ```bash
 journalctl -u sixback-ubuntu -f
+```
+
+Check SiriusXM auth status:
+
+```bash
+curl http://192.168.1.25:8000/api/siriusxm/session
+curl -X POST http://192.168.1.25:8000/api/siriusxm/session/login
 ```
 
 ## 9. Firewall

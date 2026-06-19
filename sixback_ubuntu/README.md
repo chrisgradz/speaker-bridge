@@ -9,6 +9,8 @@ It supports:
 - importing existing presets from `http://speaker-ip:8090/presets`,
 - setting and clearing TuneIn or direct-stream preset slots,
 - preserving and copying imported SiriusXM preset slots,
+- authenticating to SiriusXM from a root-owned env file and refreshing HLS
+  playlist URLs when presets are pressed,
 - migrating the speaker over Bose diagnostic telnet on port `17000`,
 - serving the key local Bose cloud endpoints on port `8000`,
 - TuneIn station resolution,
@@ -20,9 +22,9 @@ outside this MVP.
 
 Imported SiriusXM presets are preserved by replaying the original Bose
 `ContentItem` captured from the speaker, and the admin UI can copy them to
-another slot. Creating brand-new SiriusXM presets from login or channel search
-is not supported yet because that requires the authenticated SiriusXM/Bose
-adapter flow rather than only a channel ID.
+another slot. When SiriusXM credentials are configured, pressing a SiriusXM
+preset resolves a fresh authenticated HLS playlist URL through the local
+adapter instead of relying on a browser HAR capture.
 
 The MVP also includes a first-pass SiriusXM adapter endpoint for preserved
 presets:
@@ -31,9 +33,56 @@ presets:
 /core02/svc-bmx-adapter-siriusxm-everest-eco1/prod/live-adapter/playback/station/{channel}
 ```
 
-This removes the local `404` when a preserved SiriusXM preset is pressed. If the
-speaker then requests `/siriusxm/needs-auth/{channel}`, the remaining missing
-piece is authenticated SiriusXM stream URL resolution.
+This removes the local `404` when a preserved SiriusXM preset is pressed and
+routes playback through:
+
+```text
+/siriusxm/proxy/{channel}/playlist.m3u8
+```
+
+## SiriusXM Login
+
+Create a root-owned env file on the Ubuntu server:
+
+```bash
+sudo install -d -m 750 -o root -g sixback /etc/sixback-ubuntu
+sudo nano /etc/sixback-ubuntu/siriusxm.env
+```
+
+Add:
+
+```bash
+SIRIUSXM_USERNAME='your-siriusxm-login'
+SIRIUSXM_PASSWORD='your-siriusxm-password'
+```
+
+Lock it down:
+
+```bash
+sudo chown root:sixback /etc/sixback-ubuntu/siriusxm.env
+sudo chmod 640 /etc/sixback-ubuntu/siriusxm.env
+```
+
+Add this line to the `[Service]` section of
+`/etc/systemd/system/sixback-ubuntu.service`:
+
+```ini
+EnvironmentFile=-/etc/sixback-ubuntu/siriusxm.env
+```
+
+Then restart:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl restart sixback-ubuntu
+```
+
+Check redacted auth status:
+
+```bash
+curl http://localhost:8000/api/siriusxm/session
+curl -X POST http://localhost:8000/api/siriusxm/session/login
+```
 
 Store SiriusXM channel metadata from the web player:
 
@@ -43,33 +92,18 @@ curl -X PUT http://localhost:8000/api/siriusxm/channels/firstwave \
   -d '{"name":"1st Wave","entity_url":"https://www.siriusxm.com/player/channel-linear/entity/65f04311-3581-256c-97b9-279838d6ff5e"}'
 ```
 
-That web player URL is not a direct audio stream. When a real authenticated
-audio URL is available, add it as `stream_url`:
+Refresh a channel stream manually:
 
 ```bash
-curl -X PUT http://localhost:8000/api/siriusxm/channels/firstwave \
-  -H 'Content-Type: application/json' \
-  -d '{"name":"1st Wave","entity_url":"https://www.siriusxm.com/player/channel-linear/entity/65f04311-3581-256c-97b9-279838d6ff5e","stream_url":"https://example.com/authenticated-audio.m3u8"}'
+curl -X POST http://localhost:8000/api/siriusxm/channels/firstwave/refresh
 ```
 
-You can also import a SiriusXM web-player HAR capture. The importer extracts the
-HLS playlist URL and stores it as the current `stream_url`. HAR files may contain
-session-like URLs, so they are ignored by git.
+The service also refreshes the channel when the speaker requests playback. If
+credentials are configured, the authenticated resolver is preferred over any old
+stored `stream_url`.
 
-```bash
-cd /opt/sixback_ubuntu
-sudo systemctl stop sixback-ubuntu
-sudo -u sixback python3 tools/import_siriusxm_har.py \
-  --db /var/lib/sixback-ubuntu/state.sqlite3 \
-  --station-id firstwave \
-  --entity-url https://www.siriusxm.com/player/channel-linear/entity/65f04311-3581-256c-97b9-279838d6ff5e \
-  /path/to/www.siriusxm.com.har
-sudo systemctl start sixback-ubuntu
-```
-
-If the speaker still fails to play after importing a HAR, the captured playlist
-URL may have expired or may require browser-only TLS/header behavior. Capture a
-fresh HAR while the web player is actively playing and import it again.
+The HAR importer remains in `tools/import_siriusxm_har.py` only as legacy
+diagnostic tooling. It is not part of the normal SiriusXM setup path.
 
 Inspect recent speaker event payloads after a failed playback attempt:
 
@@ -181,6 +215,7 @@ Wants=network-online.target
 
 [Service]
 WorkingDirectory=/opt/sixback_ubuntu
+EnvironmentFile=-/etc/sixback-ubuntu/siriusxm.env
 ExecStart=/usr/bin/python3 -m sixback_ubuntu --host 0.0.0.0 --port 8000 --public-base http://192.168.1.25:8000 --db /var/lib/sixback-ubuntu/state.sqlite3
 Restart=on-failure
 User=sixback

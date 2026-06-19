@@ -4,6 +4,7 @@ import argparse
 import base64
 import hashlib
 import json
+import os
 import re
 import socket
 import urllib.error
@@ -34,6 +35,14 @@ from .cloud import (
 )
 from .db import Store
 from .speaker import import_presets, migrate_speaker, probe_speaker
+from .siriusxm import (
+    DEFAULT_ENV_FILE,
+    SiriusXmCredentials,
+    SiriusXmError,
+    SiriusXmNotConfigured,
+    SiriusXmSession,
+    should_refresh_stream,
+)
 
 
 Json = dict[str, Any]
@@ -101,6 +110,7 @@ class SixBackServer(ThreadingHTTPServer):
         super().__init__(addr, SixBackHandler)
         self.store = store
         self.public_base = public_base.rstrip("/")
+        self.siriusxm = SiriusXmSession.from_env(os.environ.get("SIXBACK_SIRIUSXM_ENV_FILE", DEFAULT_ENV_FILE))
         self.siriusxm_proxy_urls: dict[str, str] = {}
         self.routes: list[tuple[str, re.Pattern[str], Callable[..., None]]] = []
         self._register_routes()
@@ -123,8 +133,11 @@ class SixBackServer(ThreadingHTTPServer):
         self.route("DELETE", r"/api/speakers/(?P<device_id>[^/]+)/presets/(?P<slot>[1-6])", handle_delete_preset)
         self.route("POST", r"/api/speakers/(?P<device_id>[^/]+)/presets/(?P<slot>[1-6])/copy", handle_copy_preset)
         self.route("GET", r"/api/siriusxm/channels", handle_siriusxm_channels_list)
+        self.route("GET", r"/api/siriusxm/session", handle_siriusxm_session)
+        self.route("POST", r"/api/siriusxm/session/login", handle_siriusxm_session_login)
         self.route("GET", r"/api/siriusxm/channels/(?P<station_id>[^/]+)", handle_siriusxm_channel_get)
         self.route("PUT", r"/api/siriusxm/channels/(?P<station_id>[^/]+)", handle_siriusxm_channel_put)
+        self.route("POST", r"/api/siriusxm/channels/(?P<station_id>[^/]+)/refresh", handle_siriusxm_channel_refresh)
         self.route("GET", r"/bmx/registry/v1/services", handle_bmx_services)
         self.route("GET", r"/bmx/registry/v1/servicesAvailability", handle_bmx_services_availability)
         self.route("GET", r"/streaming/sourceproviders", handle_sourceproviders)
@@ -329,6 +342,20 @@ def handle_siriusxm_channels_list(req: SixBackHandler) -> None:
     req.send_json({"channels": req.server.store.list_siriusxm_channels()})
 
 
+def handle_siriusxm_session(req: SixBackHandler) -> None:
+    req.send_json({"session": req.server.siriusxm.status()})
+
+
+def handle_siriusxm_session_login(req: SixBackHandler) -> None:
+    try:
+        req.server.siriusxm.login()
+    except Exception as exc:
+        message = sanitize_siriusxm_error(str(exc), req.server.siriusxm.credentials)
+        req.send_json({"error": "siriusxm_login_failed", "message": message}, 502)
+        return
+    req.send_json({"session": req.server.siriusxm.status()})
+
+
 def handle_siriusxm_channel_get(req: SixBackHandler, station_id: str) -> None:
     req.send_json({"channel": req.server.store.get_siriusxm_channel(station_id)})
 
@@ -344,6 +371,23 @@ def handle_siriusxm_channel_put(req: SixBackHandler, station_id: str) -> None:
     req.send_json({"channel": saved})
 
 
+def handle_siriusxm_channel_refresh(req: SixBackHandler, station_id: str) -> None:
+    try:
+        stream_url = resolve_siriusxm_stream_url(req.server.store, req.server.siriusxm, station_id)
+    except Exception as exc:
+        message = sanitize_siriusxm_error(str(exc), req.server.siriusxm.credentials)
+        req.send_json({"error": "siriusxm_refresh_failed", "message": message}, 502)
+        return
+    req.send_json(
+        {
+            "station_id": station_id,
+            "stream_url_refreshed": bool(stream_url),
+            "channel": req.server.store.get_siriusxm_channel(station_id),
+            "session": req.server.siriusxm.status(),
+        }
+    )
+
+
 def normalize_siriusxm_channel(body: Json) -> Json:
     name = str(body.get("name", "")).strip()
     entity_url = str(body.get("entity_url", "")).strip()
@@ -356,6 +400,44 @@ def normalize_siriusxm_channel(body: Json) -> Json:
         if not (stream_url.startswith("http://") or stream_url.startswith("https://")):
             raise ValueError("stream_url must start with http:// or https://")
     return {"name": name, "entity_url": entity_url, "stream_url": stream_url}
+
+
+def resolve_siriusxm_stream_url(store: Store, session: SiriusXmSession, station_id: str) -> str:
+    channel = store.get_siriusxm_channel(station_id)
+    if session.credentials.configured:
+        try:
+            stream_url = session.refresh_stream_url(station_id, channel)
+        except Exception as exc:
+            message = sanitize_siriusxm_error(str(exc), session.credentials)
+            store.update_siriusxm_stream_status(
+                station_id,
+                stream_url=None,
+                last_refresh_error=message,
+            )
+            raise SiriusXmError(message) from exc
+        store.update_siriusxm_stream_status(
+            station_id,
+            stream_url=stream_url,
+            last_refresh_error="",
+        )
+        return stream_url
+    stream_url = str(channel.get("stream_url", ""))
+    if stream_url:
+        return stream_url
+    raise SiriusXmNotConfigured("SiriusXM credentials are not configured")
+
+
+def should_retry_siriusxm_fetch(session: SiriusXmSession, exc: Exception) -> bool:
+    return session.credentials.configured and should_refresh_stream("configured", exc)
+
+
+def sanitize_siriusxm_error(message: str, credentials: SiriusXmCredentials) -> str:
+    sanitized = re.sub(r"https://[^\s\"']+", "[redacted-url]", message)
+    for secret in (credentials.username, credentials.password):
+        if secret:
+            sanitized = sanitized.replace(secret, "[redacted]")
+    sanitized = re.sub(r"(token|gupId|password|username)=([^&\s]+)", r"\1=[redacted]", sanitized, flags=re.I)
+    return sanitized[:500]
 
 
 def handle_bmx_services(req: SixBackHandler) -> None:
@@ -406,16 +488,43 @@ def handle_siriusxm_now_playing(req: SixBackHandler, station_id: str) -> None:
 
 
 def handle_siriusxm_proxy_playlist(req: SixBackHandler, station_id: str) -> None:
-    channel = req.server.store.get_siriusxm_channel(station_id)
-    stream_url = channel.get("stream_url", "")
-    if not stream_url:
-        req.send_json({"error": "missing_stream_url", "station_id": station_id}, 404)
+    try:
+        stream_url = resolve_siriusxm_stream_url(req.server.store, req.server.siriusxm, station_id)
+    except SiriusXmNotConfigured:
+        channel = req.server.store.get_siriusxm_channel(station_id)
+        stream_url = channel.get("stream_url", "")
+        if not stream_url:
+            req.send_json(
+                {
+                    "error": "siriusxm_not_configured",
+                    "station_id": station_id,
+                    "message": "Create /etc/sixback-ubuntu/siriusxm.env with SIRIUSXM_USERNAME and SIRIUSXM_PASSWORD.",
+                },
+                501,
+            )
+            return
+    except Exception as exc:
+        message = sanitize_siriusxm_error(str(exc), req.server.siriusxm.credentials)
+        capture_cloud_response(req, "siriusxm", f"authenticated stream refresh failed station={station_id}: {message}")
+        req.send_json({"error": "siriusxm_refresh_failed", "message": message}, 502)
         return
     try:
         body = fetch_siriusxm_url(stream_url).decode("utf-8", "replace")
     except Exception as exc:
-        req.send_json({"error": type(exc).__name__, "message": str(exc)}, 502)
-        return
+        if should_retry_siriusxm_fetch(req.server.siriusxm, exc):
+            try:
+                stream_url = resolve_siriusxm_stream_url(req.server.store, req.server.siriusxm, station_id)
+                body = fetch_siriusxm_url(stream_url).decode("utf-8", "replace")
+            except Exception as retry_exc:
+                message = sanitize_siriusxm_error(str(retry_exc), req.server.siriusxm.credentials)
+                capture_cloud_response(req, "siriusxm", f"authenticated playlist fetch failed station={station_id}: {message}")
+                req.send_json({"error": "siriusxm_playlist_failed", "message": message}, 502)
+                return
+        else:
+            message = sanitize_siriusxm_error(str(exc), req.server.siriusxm.credentials)
+            capture_cloud_response(req, "siriusxm", f"playlist fetch failed station={station_id}: {message}")
+            req.send_json({"error": type(exc).__name__, "message": message}, 502)
+            return
     trimmed = trim_hls_playlist(body)
     rewritten = rewrite_hls_playlist(trimmed, stream_url, req.server)
     capture_cloud_response(req, "siriusxm", summarize_hls_playlist(station_id, rewritten))
@@ -977,6 +1086,13 @@ ADMIN_HTML = """<!doctype html>
         <button class="secondary" id="refreshSpeakers">Refresh</button>
       </div>
       <div class="speaker-list" id="speakerList"></div>
+      <hr>
+      <h2>SiriusXM</h2>
+      <div class="meta" id="siriusStatus">Not checked</div>
+      <div class="toolbar">
+        <button class="secondary" id="refreshSiriusStatus">Status</button>
+        <button class="secondary" id="loginSirius">Login</button>
+      </div>
     </section>
     <section>
       <h2 id="selectedTitle">Presets</h2>
@@ -990,7 +1106,7 @@ ADMIN_HTML = """<!doctype html>
     </section>
   </main>
   <script>
-    const state = { speakers: [], selected: null, presets: [] };
+    const state = { speakers: [], selected: null, presets: [], sirius: null };
     const $ = (id) => document.getElementById(id);
 
     async function api(path, options = {}) {
@@ -1017,6 +1133,22 @@ ADMIN_HTML = """<!doctype html>
       if (!state.selected && state.speakers.length) state.selected = state.speakers[0].device_id;
       renderSpeakers();
       if (state.selected) await loadPresets();
+      await loadSiriusStatus();
+    }
+
+    async function loadSiriusStatus() {
+      const data = await api('/api/siriusxm/session');
+      state.sirius = data.session || {};
+      renderSiriusStatus();
+    }
+
+    function renderSiriusStatus() {
+      const session = state.sirius || {};
+      const configured = session.configured ? 'configured' : 'not configured';
+      const loggedIn = session.session_authenticated ? 'authenticated' : 'not authenticated';
+      const username = session.username ? ` - ${session.username}` : '';
+      const error = session.last_error ? ` - ${session.last_error}` : '';
+      $('siriusStatus').textContent = `${configured}, ${loggedIn}${username}${error}`;
     }
 
     function renderSpeakers() {
@@ -1086,6 +1218,7 @@ ADMIN_HTML = """<!doctype html>
           </div>
           <div class="toolbar">
             <button data-action="save">Save</button>
+            <button class="secondary" data-action="refresh-sirius">Refresh SiriusXM</button>
             <button class="danger" data-action="clear">Clear</button>
           </div>
           <div class="toolbar copy-row">
@@ -1104,6 +1237,7 @@ ADMIN_HTML = """<!doctype html>
         syncSourceFields(card);
         card.querySelector('[data-field="source"]').onchange = () => syncSourceFields(card);
         card.querySelector('[data-action="save"]').onclick = () => savePreset(card);
+        card.querySelector('[data-action="refresh-sirius"]').onclick = () => refreshSiriusPreset(card);
         card.querySelector('[data-action="clear"]').onclick = () => clearPreset(card);
         card.querySelector('[data-action="copy"]').onclick = () => copyPreset(card);
       }
@@ -1114,6 +1248,7 @@ ADMIN_HTML = """<!doctype html>
       const raw = card.querySelector('[data-field="raw_content_item"]').value;
       card.querySelector('.tunein').style.display = source === 'TUNEIN' ? 'grid' : 'none';
       card.querySelector('.stream').style.display = source === 'LOCAL_INTERNET_RADIO' ? 'grid' : 'none';
+      card.querySelector('[data-action="refresh-sirius"]').style.display = source === 'SIRIUSXM' ? 'inline-flex' : 'none';
       const msg = card.querySelector('[data-role="card-status"]');
       if (source === 'SIRIUSXM' && raw.includes('SIRIUSXM_EVEREST')) {
         msg.textContent = 'Imported SiriusXM preset preserved from the speaker. You can copy it to another slot.';
@@ -1169,6 +1304,27 @@ ADMIN_HTML = """<!doctype html>
       await loadPresets();
     }
 
+    async function refreshSiriusPreset(card) {
+      const slot = Number(card.dataset.slot);
+      const preset = state.presets.find((item) => Number(item.slot) === slot) || {};
+      const stationId = preset.station_id || card.querySelector('[data-field="station_id"]').value.trim();
+      const status = card.querySelector('[data-role="card-status"]');
+      if (!stationId) {
+        status.textContent = 'Missing SiriusXM station id';
+        status.className = 'status error';
+        return;
+      }
+      try {
+        await api(`/api/siriusxm/channels/${encodeURIComponent(stationId)}/refresh`, { method: 'POST', body: '{}' });
+        status.textContent = 'SiriusXM stream refreshed';
+        status.className = 'status ok';
+        await loadSiriusStatus();
+      } catch (err) {
+        status.textContent = err.message;
+        status.className = 'status error';
+      }
+    }
+
     async function copyPreset(card) {
       const speaker = currentSpeaker();
       const slot = Number(card.dataset.slot);
@@ -1196,6 +1352,18 @@ ADMIN_HTML = """<!doctype html>
 
     $('refreshSpeakers').onclick = () => loadSpeakers().catch((err) => setStatus(err.message, 'error'));
     $('reloadPresets').onclick = () => loadPresets().catch((err) => setStatus(err.message, 'error'));
+    $('refreshSiriusStatus').onclick = () => loadSiriusStatus().catch((err) => setStatus(err.message, 'error'));
+    $('loginSirius').onclick = async () => {
+      try {
+        const data = await api('/api/siriusxm/session/login', { method: 'POST', body: '{}' });
+        state.sirius = data.session || {};
+        renderSiriusStatus();
+        setStatus('SiriusXM login succeeded', 'ok');
+      } catch (err) {
+        setStatus(err.message, 'error');
+        await loadSiriusStatus().catch(() => {});
+      }
+    };
     $('addSpeaker').onclick = async () => {
       const ip = $('speakerIp').value.trim();
       if (!ip) return;
