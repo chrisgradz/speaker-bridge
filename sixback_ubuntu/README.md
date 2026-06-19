@@ -52,6 +52,25 @@ curl -X PUT http://localhost:8000/api/siriusxm/channels/firstwave \
   -d '{"name":"1st Wave","entity_url":"https://www.siriusxm.com/player/channel-linear/entity/65f04311-3581-256c-97b9-279838d6ff5e","stream_url":"https://example.com/authenticated-audio.m3u8"}'
 ```
 
+You can also import a SiriusXM web-player HAR capture. The importer extracts the
+HLS playlist URL and stores it as the current `stream_url`. HAR files may contain
+session-like URLs, so they are ignored by git.
+
+```bash
+cd /opt/sixback_ubuntu
+sudo systemctl stop sixback-ubuntu
+sudo -u sixback python3 tools/import_siriusxm_har.py \
+  --db /var/lib/sixback-ubuntu/state.sqlite3 \
+  --station-id firstwave \
+  --entity-url https://www.siriusxm.com/player/channel-linear/entity/65f04311-3581-256c-97b9-279838d6ff5e \
+  /path/to/www.siriusxm.com.har
+sudo systemctl start sixback-ubuntu
+```
+
+If the speaker still fails to play after importing a HAR, the captured playlist
+URL may have expired or may require browser-only TLS/header behavior. Capture a
+fresh HAR while the web player is actively playing and import it again.
+
 This MVP is derived from the public SixBack protocol work and includes SixBack
 data assets. See `SIXBACK_LICENSE`; noncommercial terms apply to those parts.
 
