@@ -47,6 +47,10 @@ class HlsProxyTests(unittest.TestCase):
         summary = summarize_hls_playlist("firstwave", trimmed)
         self.assertIn("keys=1", summary)
         self.assertIn("media=3", summary)
+        lines = trimmed.splitlines()
+        for index, line in enumerate(lines[:-1]):
+            if line.startswith("#EXTINF:"):
+                self.assertFalse(lines[index + 1].startswith("#"))
 
     def test_rewrite_hls_playlist_uses_root_relative_token_urls(self) -> None:
         server = FakeServer()

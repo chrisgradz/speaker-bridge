@@ -429,6 +429,7 @@ def handle_siriusxm_proxy_fetch(req: SixBackHandler, token: str = "") -> None:
     try:
         body = fetch_siriusxm_url(target)
     except Exception as exc:
+        capture_cloud_response(req, "siriusxm", describe_siriusxm_fetch_error(target, exc))
         req.send_json({"error": type(exc).__name__, "message": str(exc)}, 502)
         return
     content_type = "application/octet-stream"
@@ -488,7 +489,7 @@ def trim_hls_playlist(body: str, max_segments: int = 6) -> str:
             groups.append([*pending, line])
             pending = []
             continue
-        if seen_media:
+        if seen_media or is_hls_segment_tag(stripped):
             pending.append(line)
         else:
             header.append(line)
@@ -507,6 +508,18 @@ def trim_hls_playlist(body: str, max_segments: int = 6) -> str:
     for group in groups[-max_segments:]:
         trimmed.extend(group)
     return "\n".join(trimmed) + "\n"
+
+
+def is_hls_segment_tag(line: str) -> bool:
+    return line.startswith(
+        (
+            "#EXTINF:",
+            "#EXT-X-BYTERANGE:",
+            "#EXT-X-DISCONTINUITY",
+            "#EXT-X-PROGRAM-DATE-TIME:",
+            "#EXT-X-MAP:",
+        )
+    )
 
 
 def rewrite_hls_key_line(line: str, playlist_url: str, server: SixBackServer) -> str:
@@ -532,6 +545,24 @@ def summarize_hls_playlist(station_id: str, playlist: str) -> str:
     preview = "\n".join(lines[:12])
     preview = re.sub(r"/siriusxm/proxy/fetch/[A-Fa-f0-9]+", "/siriusxm/proxy/fetch/[token]", preview)
     return f"proxied playlist station={station_id} lines={len(lines)} keys={keys} media={media}\n{preview}"
+
+
+def describe_siriusxm_fetch_error(target: str, exc: Exception) -> str:
+    parsed = urlparse(target)
+    location = f"{parsed.netloc}{parsed.path}"
+    if isinstance(exc, urllib.error.HTTPError):
+        try:
+            body = exc.read(512).decode("utf-8", "replace").strip()
+        except Exception:
+            body = ""
+        body = re.sub(r"\s+", " ", body)
+        return (
+            f"proxied fetch error host_path={location} "
+            f"http_status={exc.code} reason={exc.reason} body={body[:240]}"
+        )
+    if isinstance(exc, urllib.error.URLError):
+        return f"proxied fetch error host_path={location} url_error={exc.reason}"
+    return f"proxied fetch error host_path={location} error={type(exc).__name__}: {exc}"
 
 
 def handle_siriusxm_needs_auth(req: SixBackHandler, station_id: str) -> None:
