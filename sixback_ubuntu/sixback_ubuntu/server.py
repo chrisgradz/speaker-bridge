@@ -20,6 +20,7 @@ from .cloud import (
     bmx_services_availability,
     device_presets,
     siriusxm_availability,
+    siriusxm_now_playing,
     siriusxm_station,
     siriusxm_token,
     sourceproviders_xml,
@@ -120,6 +121,8 @@ class SixBackServer(ThreadingHTTPServer):
         self.route("POST", r"/core02/svc-bmx-adapter-siriusxm-everest-eco1/prod/live-adapter/token", handle_siriusxm_token)
         self.route("GET", r"/core02/svc-bmx-adapter-siriusxm-everest-eco1/prod/live-adapter/availability", handle_siriusxm_availability)
         self.route("GET", r"/core02/svc-bmx-adapter-siriusxm-everest-eco1/prod/live-adapter/playback/station/(?P<station_id>[^/]+)", handle_siriusxm_station)
+        self.route("GET", r"/core02/svc-bmx-adapter-siriusxm-everest-eco1/prod/live-adapter/v1/now-playing/station/(?P<station_id>[^/]+)", handle_siriusxm_now_playing)
+        self.route("POST", r"/core02/svc-bmx-adapter-siriusxm-everest-eco1/prod/live-adapter/v1/report", handle_empty)
         self.route("GET", r"/siriusxm/needs-auth/(?P<station_id>[^/]+)", handle_siriusxm_needs_auth)
         self.route("POST", r"/v1/scmudc/(?P<device_id>[^/]+)", handle_empty)
         self.route("GET", r"/streaming/account/(?P<account_id>[^/]+)/full", handle_account_full)
@@ -315,6 +318,10 @@ def handle_siriusxm_availability(req: SixBackHandler) -> None:
 
 def handle_siriusxm_station(req: SixBackHandler, station_id: str) -> None:
     req.send_bytes(siriusxm_station(req.server.store, station_id, req.server.public_base), content_type="application/json")
+
+
+def handle_siriusxm_now_playing(req: SixBackHandler, station_id: str) -> None:
+    req.send_bytes(siriusxm_now_playing(req.server.store, station_id), content_type="application/json")
 
 
 def handle_siriusxm_needs_auth(req: SixBackHandler, station_id: str) -> None:
