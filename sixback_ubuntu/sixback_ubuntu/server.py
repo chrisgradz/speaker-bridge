@@ -108,6 +108,7 @@ class SixBackServer(ThreadingHTTPServer):
         self.route("POST", r"/api/speakers/(?P<device_id>[^/]+)/import-presets", handle_import_presets)
         self.route("POST", r"/api/speakers/(?P<device_id>[^/]+)/migrate", handle_migrate)
         self.route("GET", r"/api/speakers/(?P<device_id>[^/]+)/events", handle_speaker_events)
+        self.route("GET", r"/api/accounts/(?P<account_id>[^/]+)/cloud-responses", handle_cloud_responses)
         self.route("GET", r"/api/speakers/(?P<device_id>[^/]+)/presets", handle_get_presets)
         self.route("PUT", r"/api/speakers/(?P<device_id>[^/]+)/presets/(?P<slot>[1-6])", handle_put_preset)
         self.route("DELETE", r"/api/speakers/(?P<device_id>[^/]+)/presets/(?P<slot>[1-6])", handle_delete_preset)
@@ -190,6 +191,21 @@ def handle_speaker_events(req: SixBackHandler, device_id: str) -> None:
         req.send_json({"error": "unknown speaker"}, 404)
         return
     req.send_json({"device_id": device_id, "events": req.server.store.recent_scmudc_events(device_id)})
+
+
+def handle_cloud_responses(req: SixBackHandler, account_id: str) -> None:
+    query = urlparse(req.path).query
+    raw = "raw=1" in query or "raw=true" in query.lower()
+    responses = req.server.store.recent_cloud_responses(account_id)
+    if not raw:
+        responses = [
+            {
+                **response,
+                "body": redact_cloud_response(str(response.get("body", ""))),
+            }
+            for response in responses
+        ]
+    req.send_json({"account_id": account_id, "redacted": not raw, "responses": responses})
 
 
 def handle_get_presets(req: SixBackHandler, device_id: str) -> None:
@@ -451,14 +467,27 @@ def textish(value: Any) -> str:
 
 
 def handle_account_full(req: SixBackHandler, account_id: str) -> None:
-    req.send_bytes(account_full(req.server.store, account_id), content_type="application/xml")
+    body = account_full(req.server.store, account_id)
+    capture_cloud_response(req, account_id, body.decode("utf-8", "replace"))
+    req.send_bytes(body, content_type="application/xml")
 
 
 def handle_sources(req: SixBackHandler, account_id: str) -> None:
-    req.send_text(
-        f'<?xml version="1.0" standalone="yes"?>{sources_xml(req.server.store, account_id)}',
-        content_type="application/xml",
-    )
+    body = f'<?xml version="1.0" standalone="yes"?>{sources_xml(req.server.store, account_id)}'
+    capture_cloud_response(req, account_id, body)
+    req.send_text(body, content_type="application/xml")
+
+
+def capture_cloud_response(req: SixBackHandler, account_id: str, body: str) -> None:
+    path = urlparse(req.path).path
+    req.server.store.add_cloud_response(account_id, path, req.client_address[0], body)
+    print(f"[cloud-response] account={account_id} path={path} client={req.client_address[0]} bytes={len(body)}")
+
+
+def redact_cloud_response(body: str) -> str:
+    body = re.sub(r'(sourceAccount=")[^"]*(")', r"\1[redacted]\2", body)
+    body = re.sub(r"(<username>)[a-fA-F0-9]{16,}(</username>)", r"\1[redacted]\2", body)
+    return body
 
 
 def handle_account_presets(req: SixBackHandler, account_id: str) -> None:

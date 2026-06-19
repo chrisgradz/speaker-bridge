@@ -49,6 +49,15 @@ CREATE TABLE IF NOT EXISTS scmudc_events (
     summary TEXT NOT NULL DEFAULT '',
     body TEXT NOT NULL DEFAULT ''
 );
+
+CREATE TABLE IF NOT EXISTS cloud_responses (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    account_id TEXT NOT NULL,
+    path TEXT NOT NULL,
+    client_ip TEXT NOT NULL DEFAULT '',
+    received_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    body TEXT NOT NULL DEFAULT ''
+);
 """
 
 
@@ -266,6 +275,39 @@ class Store:
             LIMIT ?
             """,
             (device_id, limit),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def add_cloud_response(self, account_id: str, path: str, client_ip: str, body: str) -> None:
+        with self.conn:
+            self.conn.execute(
+                "INSERT INTO cloud_responses(account_id, path, client_ip, body) VALUES(?, ?, ?, ?)",
+                (account_id, path, client_ip, body),
+            )
+            self.conn.execute(
+                """
+                DELETE FROM cloud_responses
+                WHERE id NOT IN (
+                    SELECT id FROM cloud_responses
+                    WHERE account_id=?
+                    ORDER BY id DESC
+                    LIMIT 20
+                )
+                AND account_id=?
+                """,
+                (account_id, account_id),
+            )
+
+    def recent_cloud_responses(self, account_id: str, limit: int = 10) -> list[dict[str, Any]]:
+        rows = self.conn.execute(
+            """
+            SELECT id, account_id, path, client_ip, received_at, body
+            FROM cloud_responses
+            WHERE account_id=?
+            ORDER BY id DESC
+            LIMIT ?
+            """,
+            (account_id, limit),
         ).fetchall()
         return [dict(row) for row in rows]
 
