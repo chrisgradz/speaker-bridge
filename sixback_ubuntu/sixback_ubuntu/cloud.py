@@ -123,9 +123,9 @@ def sources_xml(store: Store | None = None, account_id: str = "") -> str:
     if accounts:
         for idx, account in enumerate(accounts, start=4):
             username = escape(account["source_account"])
-            parts.append(_source_xml(str(idx), "SiriusXM", "38", "SIRIUSXM_EVEREST", username))
+            parts.append(_source_xml(str(idx), "SiriusXM", "17", "SIRIUSXM", username))
     else:
-        parts.append(_source_xml("4", "SiriusXM", "38", "SIRIUSXM_EVEREST", ""))
+        parts.append(_source_xml("4", "SiriusXM", "17", "SIRIUSXM", ""))
     parts.append("</sources>")
     return "".join(parts)
 
