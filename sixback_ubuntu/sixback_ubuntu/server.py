@@ -373,7 +373,7 @@ def handle_siriusxm_channel_put(req: SixBackHandler, station_id: str) -> None:
 
 def handle_siriusxm_channel_refresh(req: SixBackHandler, station_id: str) -> None:
     try:
-        stream_url = resolve_siriusxm_stream_url(req.server.store, req.server.siriusxm, station_id)
+        stream_url = resolve_siriusxm_stream_url(req.server.store, req.server.siriusxm, station_id, force=True)
     except Exception as exc:
         message = sanitize_siriusxm_error(str(exc), req.server.siriusxm.credentials)
         req.send_json({"error": "siriusxm_refresh_failed", "message": message}, 502)
@@ -402,8 +402,11 @@ def normalize_siriusxm_channel(body: Json) -> Json:
     return {"name": name, "entity_url": entity_url, "stream_url": stream_url}
 
 
-def resolve_siriusxm_stream_url(store: Store, session: SiriusXmSession, station_id: str) -> str:
+def resolve_siriusxm_stream_url(store: Store, session: SiriusXmSession, station_id: str, force: bool = False) -> str:
     channel = store.get_siriusxm_channel(station_id)
+    stream_url = str(channel.get("stream_url", ""))
+    if stream_url and not force:
+        return stream_url
     if session.credentials.configured:
         try:
             stream_url = session.refresh_stream_url(station_id, channel)
@@ -421,7 +424,6 @@ def resolve_siriusxm_stream_url(store: Store, session: SiriusXmSession, station_
             last_refresh_error="",
         )
         return stream_url
-    stream_url = str(channel.get("stream_url", ""))
     if stream_url:
         return stream_url
     raise SiriusXmNotConfigured("SiriusXM credentials are not configured")
@@ -513,7 +515,12 @@ def handle_siriusxm_proxy_playlist(req: SixBackHandler, station_id: str) -> None
     except Exception as exc:
         if should_retry_siriusxm_fetch(req.server.siriusxm, exc):
             try:
-                stream_url = resolve_siriusxm_stream_url(req.server.store, req.server.siriusxm, station_id)
+                stream_url = resolve_siriusxm_stream_url(
+                    req.server.store,
+                    req.server.siriusxm,
+                    station_id,
+                    force=True,
+                )
                 body = fetch_siriusxm_url(stream_url).decode("utf-8", "replace")
             except Exception as retry_exc:
                 message = sanitize_siriusxm_error(str(retry_exc), req.server.siriusxm.credentials)

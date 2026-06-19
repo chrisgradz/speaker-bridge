@@ -197,7 +197,32 @@ class SiriusXmAuthTests(unittest.TestCase):
         with self.assertRaisesRegex(Exception, "bad login"):
             session.login()
 
-    def test_server_prefers_authenticated_refresh_over_stored_har_stream(self) -> None:
+    def test_server_reuses_cached_authenticated_stream_url(self) -> None:
+        class FakeSession:
+            credentials = SiriusXmCredentials("listener@example.com", "secret password")
+
+            def refresh_stream_url(self, station_id, channel):
+                raise AssertionError("playback should not refresh a cached stream URL")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Store(os.path.join(tmp, "state.sqlite3"))
+            store.upsert_siriusxm_channel(
+                "firstwave",
+                {
+                    "name": "1st Wave",
+                    "entity_url": "https://www.siriusxm.com/player/channel-linear/entity/entity-id",
+                    "stream_url": "https://live.example.test/cached.m3u8?token=abc&consumer=k2",
+                },
+            )
+
+            try:
+                resolved = resolve_siriusxm_stream_url(store, FakeSession(), "firstwave")
+            finally:
+                store.conn.close()
+
+        self.assertEqual(resolved, "https://live.example.test/cached.m3u8?token=abc&consumer=k2")
+
+    def test_server_forced_refresh_replaces_cached_stream_url(self) -> None:
         class FakeSession:
             credentials = SiriusXmCredentials("listener@example.com", "secret password")
 
@@ -217,9 +242,11 @@ class SiriusXmAuthTests(unittest.TestCase):
                 },
             )
 
-            resolved = resolve_siriusxm_stream_url(store, FakeSession(), "firstwave")
-            saved = store.get_siriusxm_channel("firstwave")
-            store.conn.close()
+            try:
+                resolved = resolve_siriusxm_stream_url(store, FakeSession(), "firstwave", force=True)
+                saved = store.get_siriusxm_channel("firstwave")
+            finally:
+                store.conn.close()
 
         self.assertEqual(resolved, "https://live.example.test/fresh.m3u8")
         self.assertEqual(saved["stream_url"], "https://live.example.test/fresh.m3u8")
