@@ -1293,6 +1293,11 @@ class SiriusXmAuthTests(unittest.TestCase):
         self.assertEqual(payload["nowPlaying"]["source"], "SIRIUSXM_EVEREST")
         self.assertEqual(payload["nowPlaying"]["track"]["text"], "Just Like Heaven")
         self.assertEqual(payload["contentItem"]["source"], "SIRIUSXM_EVEREST")
+        self.assertEqual(
+            payload["audio"]["streamUrl"],
+            "http://ubuntu.example:8000/siriusxm/proxy/firstwave/metadata-playlist.m3u8",
+        )
+        self.assertEqual(payload["_meta"]["hlsTimedMetadata"], "id3-prepend")
 
     def test_siriusxm_display_experiment_route_accepts_adapter_relative_path(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

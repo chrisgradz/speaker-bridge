@@ -178,6 +178,8 @@ class SixBackServer(ThreadingHTTPServer):
         self.route("GET", r"/core02/svc-bmx-adapter-siriusxm-everest-eco1/prod/live-adapter/v1/now-playing/station/(?P<station_id>[^/]+)", handle_siriusxm_now_playing)
         self.route("POST", r"/core02/svc-bmx-adapter-siriusxm-everest-eco1/prod/live-adapter/v1/report", handle_report)
         self.route("GET", r"/siriusxm/proxy/(?P<station_id>[^/]+)/playlist\.m3u8", handle_siriusxm_proxy_playlist)
+        self.route("GET", r"/siriusxm/proxy/(?P<station_id>[^/]+)/metadata-playlist\.m3u8", handle_siriusxm_metadata_proxy_playlist)
+        self.route("GET", r"/siriusxm/proxy/meta/(?P<station_id>[^/]+)/(?P<token>[^/]+)", handle_siriusxm_metadata_proxy_fetch)
         self.route("GET", r"/siriusxm/proxy/fetch/(?P<token>[^/]+)", handle_siriusxm_proxy_fetch)
         self.route("GET", r"/siriusxm/proxy/fetch", handle_siriusxm_proxy_fetch)
         self.route("GET", r"/siriusxm/needs-auth/(?P<station_id>[^/]+)", handle_siriusxm_needs_auth)
@@ -924,6 +926,14 @@ def handle_siriusxm_now_playing(req: SixBackHandler, station_id: str) -> None:
 
 
 def handle_siriusxm_proxy_playlist(req: SixBackHandler, station_id: str) -> None:
+    handle_siriusxm_proxy_playlist_impl(req, station_id, inject_metadata=False)
+
+
+def handle_siriusxm_metadata_proxy_playlist(req: SixBackHandler, station_id: str) -> None:
+    handle_siriusxm_proxy_playlist_impl(req, station_id, inject_metadata=True)
+
+
+def handle_siriusxm_proxy_playlist_impl(req: SixBackHandler, station_id: str, inject_metadata: bool = False) -> None:
     station_id = resolve_siriusxm_station_alias(req.server.store, station_id)
     try:
         stream_url = resolve_siriusxm_stream_url(req.server.store, req.server.siriusxm, station_id)
@@ -971,8 +981,23 @@ def handle_siriusxm_proxy_playlist(req: SixBackHandler, station_id: str) -> None
             capture_cloud_response(req, "siriusxm", f"playlist fetch failed station={station_id}: {message}")
             req.send_json({"error": type(exc).__name__, "message": message}, 502)
             return
+    metadata: Json = {}
+    if inject_metadata:
+        try:
+            channel = req.server.store.get_siriusxm_channel(station_id)
+            metadata = req.server.siriusxm.now_playing(station_id, channel)
+        except Exception as exc:
+            message = sanitize_siriusxm_error(str(exc), req.server.siriusxm.credentials)
+            capture_cloud_response(req, "siriusxm", f"playlist metadata lookup failed station={station_id}: {message}")
     trimmed = trim_hls_playlist(body)
-    rewritten = rewrite_hls_playlist(trimmed, stream_url, req.server)
+    rewritten = rewrite_hls_playlist(
+        trimmed,
+        stream_url,
+        req.server,
+        station_id=station_id,
+        inject_metadata=inject_metadata,
+        metadata=metadata,
+    )
     if should_capture_siriusxm_playlist_success():
         capture_cloud_response(req, "siriusxm", summarize_hls_playlist(station_id, rewritten))
     req.send_bytes(rewritten.encode("utf-8"), content_type="application/x-mpegURL")
@@ -1008,6 +1033,32 @@ def handle_siriusxm_proxy_fetch(req: SixBackHandler, token: str = "") -> None:
         req, target, f"proxied fetch path={urlparse(target).path} bytes={len(body)}"
     )
     req.send_bytes(body, content_type=content_type)
+
+
+def handle_siriusxm_metadata_proxy_fetch(req: SixBackHandler, station_id: str, token: str) -> None:
+    station_id = resolve_siriusxm_station_alias(req.server.store, station_id)
+    target = req.server.siriusxm_proxy_urls.get(token, "")
+    if not target.startswith("https://"):
+        req.send_json({"error": "invalid_proxy_url"}, 400)
+        return
+    if is_siriusxm_hls_key(target):
+        req.send_bytes(SIRIUSXM_HLS_AES_KEY, content_type="application/octet-stream")
+        return
+    try:
+        body = cached_fetch_siriusxm_url(target, req.server.siriusxm_fetch_cache)
+    except Exception as exc:
+        capture_cloud_response(req, "siriusxm", describe_siriusxm_fetch_error(target, exc))
+        req.send_json({"error": type(exc).__name__, "message": str(exc)}, 502)
+        return
+    metadata: Json = {}
+    try:
+        channel = req.server.store.get_siriusxm_channel(station_id)
+        metadata = req.server.siriusxm.now_playing(station_id, channel)
+    except Exception as exc:
+        message = sanitize_siriusxm_error(str(exc), req.server.siriusxm.credentials)
+        capture_cloud_response(req, "siriusxm", f"id3 metadata lookup failed station={station_id}: {message}")
+    injected = inject_id3_metadata(body, metadata)
+    req.send_bytes(injected, content_type="audio/aac")
 
 
 def fetch_siriusxm_url(url: str) -> bytes:
@@ -1071,18 +1122,54 @@ def maybe_capture_siriusxm_fetch_success(req: SixBackHandler, target: str, body:
         capture_cloud_response(req, "siriusxm", body)
 
 
-def rewrite_hls_playlist(body: str, playlist_url: str, server: SixBackServer) -> str:
+def rewrite_hls_playlist(
+    body: str,
+    playlist_url: str,
+    server: SixBackServer,
+    station_id: str = "",
+    inject_metadata: bool = False,
+    metadata: Json | None = None,
+) -> str:
     rewritten: list[str] = []
+    encrypted = hls_playlist_is_encrypted(body)
+    title = hls_metadata_title(metadata or {}) if inject_metadata and encrypted else ""
     for line in body.splitlines():
         stripped = line.strip()
         if stripped.startswith("#EXT-X-KEY:"):
             rewritten.append(rewrite_hls_key_line(line, playlist_url, server))
+        elif title and stripped.startswith("#EXTINF:"):
+            prefix = line.split(",", 1)[0]
+            rewritten.append(f"{prefix},{title}")
         elif stripped and not stripped.startswith("#"):
             target = inherit_playlist_auth_query(urljoin(playlist_url, stripped), playlist_url)
-            rewritten.append(proxy_url(target, server, absolute=False))
+            rewritten.append(
+                proxy_url(
+                    target,
+                    server,
+                    absolute=False,
+                    station_id=station_id,
+                    inject_metadata=inject_metadata and not encrypted,
+                )
+            )
         else:
             rewritten.append(line)
     return "\n".join(rewritten) + "\n"
+
+
+def hls_playlist_is_encrypted(body: str) -> bool:
+    for line in body.splitlines():
+        stripped = line.strip().upper()
+        if stripped.startswith("#EXT-X-KEY:") and "METHOD=NONE" not in stripped:
+            return True
+    return False
+
+
+def hls_metadata_title(metadata: Json) -> str:
+    track = str(metadata.get("trackName") or "").strip()
+    artist = str(metadata.get("artistName") or "").strip()
+    if track and artist and artist.lower() != "siriusxm":
+        return f"{artist} - {track}".replace("\n", " ").replace("\r", " ")
+    return track.replace("\n", " ").replace("\r", " ")
 
 
 def inherit_playlist_auth_query(target: str, playlist_url: str) -> str:
@@ -1166,13 +1253,61 @@ def rewrite_hls_key_line(line: str, playlist_url: str, server: SixBackServer) ->
     return re.sub(r'URI="([^"]+)"', repl, line)
 
 
-def proxy_url(target: str, server: SixBackServer, absolute: bool = True) -> str:
+def proxy_url(
+    target: str,
+    server: SixBackServer,
+    absolute: bool = True,
+    station_id: str = "",
+    inject_metadata: bool = False,
+) -> str:
     token = hashlib.sha256(target.encode("utf-8")).hexdigest()[:24]
     server.siriusxm_proxy_urls[token] = target
-    path = f"/siriusxm/proxy/fetch/{token}"
+    if inject_metadata and station_id and not is_siriusxm_hls_key(target):
+        path = f"/siriusxm/proxy/meta/{urllib.parse.quote(station_id)}/{token}"
+    else:
+        path = f"/siriusxm/proxy/fetch/{token}"
     if absolute:
         return f"{server.public_base}{path}"
     return path
+
+
+def inject_id3_metadata(segment: bytes, metadata: Json | None = None) -> bytes:
+    tag = build_id3_text_tag(metadata or {})
+    return tag + segment if tag else segment
+
+
+def build_id3_text_tag(metadata: Json) -> bytes:
+    frames = b"".join(
+        frame
+        for frame in (
+            id3_text_frame("TIT2", str(metadata.get("trackName") or "")),
+            id3_text_frame("TPE1", str(metadata.get("artistName") or "")),
+            id3_text_frame("TALB", str(metadata.get("albumName") or "")),
+        )
+        if frame
+    )
+    if not frames:
+        return b""
+    return b"ID3" + bytes([4, 0, 0]) + syncsafe(len(frames)) + frames
+
+
+def id3_text_frame(frame_id: str, value: str) -> bytes:
+    text = value.strip()
+    if not text:
+        return b""
+    payload = b"\x03" + text.encode("utf-8")
+    return frame_id.encode("ascii") + syncsafe(len(payload)) + b"\x00\x00" + payload
+
+
+def syncsafe(value: int) -> bytes:
+    return bytes(
+        [
+            (value >> 21) & 0x7F,
+            (value >> 14) & 0x7F,
+            (value >> 7) & 0x7F,
+            value & 0x7F,
+        ]
+    )
 
 
 def summarize_hls_playlist(station_id: str, playlist: str) -> str:

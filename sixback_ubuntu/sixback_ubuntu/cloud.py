@@ -315,6 +315,11 @@ def siriusxm_station_display_experiment(
     metadata: dict[str, str] | None = None,
 ) -> bytes:
     payload = json.loads(siriusxm_station(store, station_id, base_url, metadata).decode("utf-8"))
+    metadata_stream_url = f"{base_url}/siriusxm/proxy/{urllib.parse.quote(station_id)}/metadata-playlist.m3u8"
+    payload["audio"]["streamUrl"] = metadata_stream_url
+    for stream in payload["audio"].get("streams", []):
+        if isinstance(stream, dict):
+            stream["streamUrl"] = metadata_stream_url
     now_playing = json.loads(siriusxm_now_playing(store, station_id, metadata).decode("utf-8"))
     station_name = str(now_playing.get("stationName") or payload.get("name") or station_id)
     track = now_playing.get("track") or {"text": str(now_playing.get("trackName") or "")}
@@ -359,6 +364,7 @@ def siriusxm_station_display_experiment(
         {
             "resolver": "sixback-ubuntu-siriusxm-display-experiment",
             "experiment": "iheart-like-now-playing-fields",
+            "hlsTimedMetadata": "id3-prepend",
         }
     )
     return json.dumps(payload, separators=(",", ":")).encode("utf-8")

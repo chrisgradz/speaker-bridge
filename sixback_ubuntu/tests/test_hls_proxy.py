@@ -4,7 +4,9 @@ import unittest
 
 from sixback_ubuntu.sixback_ubuntu.server import (
     SIRIUSXM_HLS_AES_KEY,
+    build_id3_text_tag,
     cached_fetch_siriusxm_url,
+    inject_id3_metadata,
     is_siriusxm_hls_key,
     report_response,
     rewrite_hls_playlist,
@@ -135,6 +137,77 @@ class HlsProxyTests(unittest.TestCase):
                 "https://siriusxm-priprodlive.akamaized.net/firstwave/audio/segment.aac?token=abc&gupId=gup-123&consumer=k2",
             ],
         )
+
+    def test_rewrite_hls_playlist_can_route_unencrypted_media_through_metadata_proxy(self) -> None:
+        server = FakeServer()
+        body = "\n".join(
+            [
+                "#EXTM3U",
+                "#EXTINF:9.75,",
+                "audio/segment.aac",
+            ]
+        )
+
+        rewritten = rewrite_hls_playlist(
+            body,
+            "https://example.test/live/playlist.m3u8",
+            server,
+            station_id="big80s",
+            inject_metadata=True,
+        )
+
+        self.assertNotIn("/siriusxm/proxy/fetch/", rewritten)
+        self.assertIn("/siriusxm/proxy/meta/big80s/", rewritten)
+        self.assertEqual(len(server.siriusxm_proxy_urls), 1)
+
+    def test_rewrite_hls_playlist_keeps_encrypted_media_on_plain_proxy(self) -> None:
+        server = FakeServer()
+        body = "\n".join(
+            [
+                "#EXTM3U",
+                "#EXT-X-KEY:METHOD=AES-128,URI=\"key.bin\"",
+                "#EXTINF:9.75,",
+                "audio/segment.aac",
+            ]
+        )
+
+        rewritten = rewrite_hls_playlist(
+            body,
+            "https://example.test/live/playlist.m3u8",
+            server,
+            station_id="big80s",
+            inject_metadata=True,
+            metadata={"trackName": "Mickey", "artistName": "Toni Basil"},
+        )
+
+        self.assertIn("/siriusxm/proxy/fetch/", rewritten)
+        self.assertNotIn("/siriusxm/proxy/meta/big80s/", rewritten)
+        self.assertIn("#EXTINF:9.75,Toni Basil - Mickey", rewritten)
+        self.assertEqual(len(server.siriusxm_proxy_urls), 2)
+
+    def test_build_id3_text_tag_contains_title_artist_and_album_frames(self) -> None:
+        tag = build_id3_text_tag(
+            {
+                "trackName": "Just Like Heaven",
+                "artistName": "The Cure",
+                "albumName": "Kiss Me, Kiss Me, Kiss Me",
+            }
+        )
+
+        self.assertTrue(tag.startswith(b"ID3\x04\x00\x00"))
+        self.assertIn(b"TIT2", tag)
+        self.assertIn(b"Just Like Heaven", tag)
+        self.assertIn(b"TPE1", tag)
+        self.assertIn(b"The Cure", tag)
+        self.assertIn(b"TALB", tag)
+
+    def test_inject_id3_metadata_prepends_tag_before_aac_segment(self) -> None:
+        segment = b"\xff\xf1aac-data"
+
+        injected = inject_id3_metadata(segment, {"trackName": "Mickey", "artistName": "Toni Basil"})
+
+        self.assertTrue(injected.startswith(b"ID3"))
+        self.assertTrue(injected.endswith(segment))
 
     def test_siriusxm_key_detection(self) -> None:
         self.assertEqual(len(SIRIUSXM_HLS_AES_KEY), 16)
