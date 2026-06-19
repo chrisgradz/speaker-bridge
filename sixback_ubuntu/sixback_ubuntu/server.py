@@ -105,6 +105,7 @@ class SixBackServer(ThreadingHTTPServer):
         self.route("GET", r"/api/speakers/(?P<device_id>[^/]+)/presets", handle_get_presets)
         self.route("PUT", r"/api/speakers/(?P<device_id>[^/]+)/presets/(?P<slot>[1-6])", handle_put_preset)
         self.route("DELETE", r"/api/speakers/(?P<device_id>[^/]+)/presets/(?P<slot>[1-6])", handle_delete_preset)
+        self.route("POST", r"/api/speakers/(?P<device_id>[^/]+)/presets/(?P<slot>[1-6])/copy", handle_copy_preset)
         self.route("GET", r"/bmx/registry/v1/services", handle_bmx_services)
         self.route("GET", r"/bmx/registry/v1/servicesAvailability", handle_bmx_services_availability)
         self.route("POST", r"/bmx/tunein/v1/token", handle_tunein_token)
@@ -183,7 +184,7 @@ def handle_put_preset(req: SixBackHandler, device_id: str, slot: str) -> None:
     except ValueError as exc:
         req.send_json({"error": "invalid_preset", "message": str(exc)}, 400)
         return
-    if preset["source"] == "SIRIUSXM":
+    if preset["source"] == "SIRIUSXM" and not is_preserved_siriusxm(preset):
         req.send_json(
             {
                 "error": "unsupported_source",
@@ -194,6 +195,24 @@ def handle_put_preset(req: SixBackHandler, device_id: str, slot: str) -> None:
         return
     saved = req.server.store.set_preset(device_id, {"device_id": device_id, **preset})
     req.send_json({"device_id": device_id, "preset": saved})
+
+
+def handle_copy_preset(req: SixBackHandler, device_id: str, slot: str) -> None:
+    speaker = req.server.store.get_speaker(device_id)
+    if not speaker:
+        req.send_json({"error": "unknown speaker"}, 404)
+        return
+    body = req.read_json()
+    try:
+        source_slot = int(body.get("source_slot", 0))
+        target_slot = int(slot)
+        if source_slot < 1 or source_slot > 6:
+            raise ValueError("source_slot must be 1 through 6")
+        saved = req.server.store.copy_preset(device_id, source_slot, target_slot)
+    except ValueError as exc:
+        req.send_json({"error": "invalid_copy", "message": str(exc)}, 400)
+        return
+    req.send_json({"device_id": device_id, "source_slot": source_slot, "preset": saved})
 
 
 def handle_delete_preset(req: SixBackHandler, device_id: str, slot: str) -> None:
@@ -211,6 +230,7 @@ def normalize_admin_preset(body: Json, slot: int) -> Json:
     station_id = str(body.get("station_id", "")).strip()
     stream_url = str(body.get("stream_url", "")).strip()
     image_url = str(body.get("image_url", "")).strip()
+    raw_content_item = str(body.get("raw_content_item", "")).strip()
     if source not in {"TUNEIN", "LOCAL_INTERNET_RADIO", "SIRIUSXM"}:
         raise ValueError("source must be TUNEIN, LOCAL_INTERNET_RADIO, or SIRIUSXM")
     if not name:
@@ -226,11 +246,16 @@ def normalize_admin_preset(body: Json, slot: int) -> Json:
         "slot": slot,
         "source": source,
         "name": name,
-        "station_id": station_id if source == "TUNEIN" else "",
+        "station_id": station_id if source in {"TUNEIN", "SIRIUSXM"} else "",
         "stream_url": stream_url if source == "LOCAL_INTERNET_RADIO" else "",
         "image_url": image_url,
-        "raw_content_item": "",
+        "raw_content_item": raw_content_item if source == "SIRIUSXM" else "",
     }
+
+
+def is_preserved_siriusxm(preset: Json) -> bool:
+    raw = str(preset.get("raw_content_item", ""))
+    return "SIRIUSXM_EVEREST" in raw and "<ContentItem" in raw
 
 
 def handle_migrate(req: SixBackHandler, device_id: str) -> None:
@@ -648,10 +673,17 @@ ADMIN_HTML = """<!doctype html>
             <label class="wide">Image URL
               <input data-field="image_url" value="${escapeAttr(preset.image_url || '')}">
             </label>
+            <textarea data-field="raw_content_item" hidden>${escapeHtml(preset.raw_content_item || '')}</textarea>
           </div>
           <div class="toolbar">
             <button data-action="save">Save</button>
             <button class="danger" data-action="clear">Clear</button>
+          </div>
+          <div class="toolbar copy-row">
+            <label>Copy source slot
+              <select data-role="copy-source"></select>
+            </label>
+            <button class="secondary" data-action="copy">Copy Here</button>
           </div>
           <div class="status" data-role="card-status"></div>
         `;
@@ -659,20 +691,46 @@ ADMIN_HTML = """<!doctype html>
         card.querySelector('[data-field="source"]').value =
           preset.source === 'LOCAL_INTERNET_RADIO' ? 'LOCAL_INTERNET_RADIO' :
           preset.source === 'SIRIUSXM' ? 'SIRIUSXM' : 'TUNEIN';
+        populateCopyOptions(card);
         syncSourceFields(card);
         card.querySelector('[data-field="source"]').onchange = () => syncSourceFields(card);
         card.querySelector('[data-action="save"]').onclick = () => savePreset(card);
         card.querySelector('[data-action="clear"]').onclick = () => clearPreset(card);
+        card.querySelector('[data-action="copy"]').onclick = () => copyPreset(card);
       }
     }
 
     function syncSourceFields(card) {
       const source = card.querySelector('[data-field="source"]').value;
+      const raw = card.querySelector('[data-field="raw_content_item"]').value;
       card.querySelector('.tunein').style.display = source === 'TUNEIN' ? 'grid' : 'none';
       card.querySelector('.stream').style.display = source === 'LOCAL_INTERNET_RADIO' ? 'grid' : 'none';
       const msg = card.querySelector('[data-role="card-status"]');
-      msg.textContent = source === 'SIRIUSXM' ? 'SiriusXM requires authenticated adapter support and cannot be created by this MVP.' : '';
-      msg.className = source === 'SIRIUSXM' ? 'status warn' : 'status';
+      if (source === 'SIRIUSXM' && raw.includes('SIRIUSXM_EVEREST')) {
+        msg.textContent = 'Imported SiriusXM preset preserved from the speaker. You can copy it to another slot.';
+        msg.className = 'status ok';
+      } else if (source === 'SIRIUSXM') {
+        msg.textContent = 'New SiriusXM presets require authenticated adapter support and cannot be created by this MVP.';
+        msg.className = 'status warn';
+      } else {
+        msg.textContent = '';
+        msg.className = 'status';
+      }
+    }
+
+    function populateCopyOptions(card) {
+      const select = card.querySelector('[data-role="copy-source"]');
+      const target = Number(card.dataset.slot);
+      select.innerHTML = '';
+      for (const preset of state.presets) {
+        if (Number(preset.slot) === target) continue;
+        const label = preset.source === 'EMPTY' ? `Slot ${preset.slot} (empty)` : `Slot ${preset.slot}: ${preset.name || preset.source}`;
+        const option = document.createElement('option');
+        option.value = preset.slot;
+        option.textContent = label;
+        option.disabled = preset.source === 'EMPTY';
+        select.appendChild(option);
+      }
     }
 
     async function savePreset(card) {
@@ -699,6 +757,19 @@ ADMIN_HTML = """<!doctype html>
       const slot = Number(card.dataset.slot);
       await api(`/api/speakers/${encodeURIComponent(speaker.device_id)}/presets/${slot}`, { method: 'DELETE' });
       setStatus(`Slot ${slot} cleared`, 'ok');
+      await loadPresets();
+    }
+
+    async function copyPreset(card) {
+      const speaker = currentSpeaker();
+      const slot = Number(card.dataset.slot);
+      const sourceSlot = Number(card.querySelector('[data-role="copy-source"]').value);
+      if (!sourceSlot) return;
+      await api(`/api/speakers/${encodeURIComponent(speaker.device_id)}/presets/${slot}/copy`, {
+        method: 'POST',
+        body: JSON.stringify({ source_slot: sourceSlot }),
+      });
+      setStatus(`Copied slot ${sourceSlot} to slot ${slot}`, 'ok');
       await loadPresets();
     }
 

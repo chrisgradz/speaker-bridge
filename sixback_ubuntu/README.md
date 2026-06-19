@@ -8,6 +8,7 @@ It supports:
 - manual SoundTouch speaker IP registration,
 - importing existing presets from `http://speaker-ip:8090/presets`,
 - setting and clearing TuneIn or direct-stream preset slots,
+- preserving and copying imported SiriusXM preset slots,
 - migrating the speaker over Bose diagnostic telnet on port `17000`,
 - serving the key local Bose cloud endpoints on port `8000`,
 - TuneIn station resolution,
@@ -17,9 +18,11 @@ It does not yet attempt full SixBack parity. Spotify, the polished ESP32 Web UI,
 DLNA browsing, OTA handling, SSDP auto-discovery, and group orchestration are
 outside this MVP.
 
-SiriusXM presets are not supported for new slot creation yet. They require the
-authenticated SiriusXM/Bose adapter flow rather than only a channel ID. Imported
-opaque presets may be preserved, but the MVP cannot create new SiriusXM presets.
+Imported SiriusXM presets are preserved by replaying the original Bose
+`ContentItem` captured from the speaker, and the admin UI can copy them to
+another slot. Creating brand-new SiriusXM presets from login or channel search
+is not supported yet because that requires the authenticated SiriusXM/Bose
+adapter flow rather than only a channel ID.
 
 This MVP is derived from the public SixBack protocol work and includes SixBack
 data assets. See `SIXBACK_LICENSE`; noncommercial terms apply to those parts.
@@ -79,6 +82,15 @@ Clear a preset:
 
 ```bash
 curl -X DELETE http://localhost:8000/api/speakers/DEVICE_ID/presets/2
+```
+
+Copy an imported preset, including preserved SiriusXM raw metadata, from one
+slot to another:
+
+```bash
+curl -X POST http://localhost:8000/api/speakers/DEVICE_ID/presets/4/copy \
+  -H 'Content-Type: application/json' \
+  -d '{"source_slot":3}'
 ```
 
 Migrate the speaker to this Ubuntu service:

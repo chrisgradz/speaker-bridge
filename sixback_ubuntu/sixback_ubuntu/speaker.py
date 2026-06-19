@@ -75,7 +75,10 @@ def _normalize_preset(
     station_id = ""
     stream_url = ""
     stored_source = "LOCAL_INTERNET_RADIO"
-    if "TUNEIN" in source_upper or "/playback/station/" in location or "Tune.ashx" in location:
+    if "SIRIUSXM" in source_upper:
+        stored_source = "SIRIUSXM"
+        station_id = location.rstrip("/").split("/")[-1]
+    elif "TUNEIN" in source_upper or "Tune.ashx" in location:
         stored_source = "TUNEIN"
         station_id = location.rstrip("/").split("/")[-1]
         tune_id = re.search(r"[?&]id=([^&]+)", location)
@@ -97,8 +100,10 @@ def _normalize_preset(
 
 
 def _attr(text: str, name: str) -> str:
-    match = re.search(rf'{re.escape(name)}="([^"]*)"', text, re.I)
-    return _unescape(match.group(1)) if match else ""
+    match = re.search(rf'{re.escape(name)}=(?:"([^"]*)"|\'([^\']*)\')', text, re.I)
+    if not match:
+        return ""
+    return _unescape(match.group(1) if match.group(1) is not None else match.group(2))
 
 
 def _tag(text: str, name: str) -> str:
@@ -181,7 +186,7 @@ def _looks_like_error(reply: str) -> bool:
 def preset_to_xml(preset: dict[str, Any]) -> str:
     slot = int(preset["slot"])
     source = preset.get("source", "EMPTY")
-    if source == "OPAQUE" and preset.get("raw_content_item"):
+    if source in {"OPAQUE", "SIRIUSXM"} and preset.get("raw_content_item"):
         raw = preset["raw_content_item"]
         name = _tag(raw, "itemName") or preset.get("name", "")
         location = _attr(raw, "location") or preset.get("stream_url", "")

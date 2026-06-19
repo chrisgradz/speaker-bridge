@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import sqlite3
 from pathlib import Path
 from typing import Any
@@ -108,13 +109,21 @@ class Store:
         self.conn.execute("DELETE FROM presets WHERE device_id=? AND slot=?", (device_id, slot))
         self.conn.commit()
 
+    def copy_preset(self, device_id: str, source_slot: int, target_slot: int) -> dict[str, Any]:
+        preset = self.get_preset(device_id, source_slot)
+        if preset["source"] == "EMPTY":
+            raise ValueError("source slot is empty")
+        preset["slot"] = target_slot
+        preset["device_id"] = device_id
+        return self.set_preset(device_id, preset)
+
     def get_preset(self, device_id: str, slot: int) -> dict[str, Any]:
         row = self.conn.execute(
             "SELECT * FROM presets WHERE device_id=? AND slot=?",
             (device_id, slot),
         ).fetchone()
         if row:
-            return dict(row)
+            return _normalize_preset_row(dict(row))
         return {
             "device_id": device_id,
             "slot": slot,
@@ -135,7 +144,7 @@ class Store:
             "SELECT * FROM presets WHERE device_id=? ORDER BY slot",
             (device_id,),
         ).fetchall()
-        return [dict(row) for row in rows]
+        return [_normalize_preset_row(dict(row)) for row in rows]
 
     def _set_preset_locked(self, device_id: str, preset: dict[str, Any]) -> None:
         self.conn.execute(
@@ -161,3 +170,27 @@ class Store:
                 preset.get("raw_content_item", ""),
             ),
         )
+
+
+def _normalize_preset_row(preset: dict[str, Any]) -> dict[str, Any]:
+    raw = str(preset.get("raw_content_item", ""))
+    if "SIRIUSXM_EVEREST" in raw:
+        preset["source"] = "SIRIUSXM"
+        location = _xml_attr(raw, "location")
+        if location:
+            preset["station_id"] = location.rstrip("/").split("/")[-1]
+    return preset
+
+
+def _xml_attr(text: str, name: str) -> str:
+    match = re.search(rf'{re.escape(name)}=(?:"([^"]*)"|\'([^\']*)\')', text, re.I)
+    if not match:
+        return ""
+    value = match.group(1) if match.group(1) is not None else match.group(2)
+    return (
+        value.replace("&amp;", "&")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", '"')
+        .replace("&apos;", "'")
+    )

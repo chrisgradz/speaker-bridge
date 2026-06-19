@@ -80,6 +80,8 @@ def sources_xml() -> str:
         "<sourcename>TUNEIN</sourcename><credential type=\"token\"></credential><username></username></source>"
         '<source id="3" type="Audio"><name>Local Internet Radio</name><sourceproviderid>11</sourceproviderid>'
         "<sourcename>LOCAL_INTERNET_RADIO</sourcename><credential type=\"token\"></credential><username></username></source>"
+        '<source id="4" type="Audio"><name>SiriusXM</name><sourceproviderid>38</sourceproviderid>'
+        "<sourcename>SIRIUSXM_EVEREST</sourcename><credential type=\"token\"></credential><username></username></source>"
         "</sources>"
     )
 
