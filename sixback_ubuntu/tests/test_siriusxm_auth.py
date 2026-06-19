@@ -344,6 +344,7 @@ class SiriusXmAuthTests(unittest.TestCase):
             SiriusXmCredentials("listener@example.com", "secret password"),
             opener=opener,
         )
+        session.edge_access_token = "edge-access"
 
         metadata = session.now_playing(
             "firstwave",
@@ -357,20 +358,62 @@ class SiriusXmAuthTests(unittest.TestCase):
         self.assertEqual(metadata["artistName"], "The Cure")
         self.assertTrue(any("liveUpdate" in request.full_url for request in requests))
 
-    def test_edge_live_update_request_includes_session_auth(self) -> None:
+    def test_edge_live_update_uses_authenticated_edge_access_token(self) -> None:
+        requests = []
+
+        def opener(request):
+            requests.append(request)
+            headers = {name.lower(): value for name, value in request.header_items()}
+            body = json.loads(request.data.decode("utf-8")) if request.data else {}
+            if request.full_url.endswith("/device/v2/devices"):
+                self.assertEqual(body["tenant"], "sxm")
+                self.assertEqual(body["grantVersion"], "v2")
+                return b'{"grant":"device-grant"}'
+            if request.full_url.endswith("/session/v1/sessions/anonymous"):
+                self.assertEqual(headers["authorization"], "Bearer device-grant")
+                return b'{"accessToken":"anonymous-access"}'
+            if request.full_url.endswith("/identity/v1/identities/authenticate/password"):
+                self.assertEqual(headers["authorization"], "Bearer anonymous-access")
+                self.assertEqual(body["handle"], "listener@example.com")
+                self.assertEqual(body["password"], "secret password")
+                return b'{"grant":"identity-grant"}'
+            if request.full_url.endswith("/session/v1/sessions/authenticated"):
+                self.assertEqual(headers["authorization"], "Bearer identity-grant")
+                return b'{"accessToken":"edge-access","accessTokenExpiresAt":"2099-01-01T00:00:00Z"}'
+            if "liveUpdate" in request.full_url:
+                self.assertEqual(headers["authorization"], "Bearer edge-access")
+                return json.dumps(
+                    {
+                        "channelName": "1st Wave",
+                        "items": [
+                            {
+                                "name": "Just Like Heaven",
+                                "artistName": "The Cure",
+                            }
+                        ],
+                    }
+                ).encode("utf-8")
+            if "modify/authentication" in request.full_url or "resume" in request.full_url:
+                return b'{"ModuleListResponse":{"status":1}}'
+            raise AssertionError(f"unexpected URL {request.full_url}")
+
         session = SiriusXmSession(
             SiriusXmCredentials("listener@example.com", "secret password"),
-            opener=lambda request: b"{}",
+            opener=opener,
         )
-        session.cookie_jar.set_cookie(make_cookie("SXMAKTOKEN", "token=abc,expires=tomorrow"))
-        session.cookie_jar.set_cookie(make_cookie("SXMDATA", "%7B%22gupId%22%3A%22gup-123%22%7D"))
 
-        request = session._edge_live_update_request("65f04311-3581-256c-97b9-279838d6ff5e")
-        headers = {name.lower(): value for name, value in request.header_items()}
+        metadata = session.now_playing(
+            "firstwave",
+            {
+                "name": "1st Wave",
+                "entity_url": "https://www.siriusxm.com/player/channel-linear/entity/65f04311-3581-256c-97b9-279838d6ff5e",
+            },
+        )
 
-        self.assertEqual(headers["authorization"], "Bearer abc")
-        self.assertEqual(headers["x-sxm-token"], "abc")
-        self.assertEqual(headers["x-sxm-gup-id"], "gup-123")
+        self.assertEqual(metadata["trackName"], "Just Like Heaven")
+        self.assertEqual(metadata["artistName"], "The Cure")
+        self.assertTrue(any(request.full_url.endswith("/device/v2/devices") for request in requests))
+        self.assertTrue(any("liveUpdate" in request.full_url for request in requests))
 
     def test_session_now_playing_falls_back_to_k2_when_edge_metadata_fails(self) -> None:
         requests = []
@@ -400,6 +443,7 @@ class SiriusXmAuthTests(unittest.TestCase):
             SiriusXmCredentials("listener@example.com", "secret password"),
             opener=opener,
         )
+        session.edge_access_token = "edge-access"
 
         metadata = session.now_playing(
             "firstwave",
@@ -442,6 +486,7 @@ class SiriusXmAuthTests(unittest.TestCase):
             SiriusXmCredentials("listener@example.com", "secret password"),
             opener=opener,
         )
+        session.edge_access_token = "edge-access"
         channel = {
             "name": "1st Wave",
             "entity_url": "https://www.siriusxm.com/player/channel-linear/entity/65f04311-3581-256c-97b9-279838d6ff5e",

@@ -15,8 +15,10 @@ from typing import Any, Callable
 
 DEFAULT_ENV_FILE = "/etc/sixback-ubuntu/siriusxm.env"
 K2_REST = "https://player.siriusxm.com/rest/v2/experience/modules/{method}"
+EDGE_BASE = "https://api.edge-gateway.siriusxm.com"
 EDGE_LIVE_UPDATE = "https://api.edge-gateway.siriusxm.com/playback/play/v1/liveUpdate"
 LIVE_PRIMARY_HLS = "https://siriusxm-priprodlive.akamaized.net"
+EDGE_APP_VERSION = "7.121.0"
 USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
     "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15"
@@ -224,6 +226,50 @@ def metadata_debug(source: str, result: str, metadata: dict[str, str], payload: 
     return debug
 
 
+def extract_access_token(payload: Any) -> str:
+    if isinstance(payload, dict):
+        session = payload.get("session")
+        if isinstance(session, dict) and session.get("accessToken"):
+            return str(session.get("accessToken"))
+        if payload.get("accessToken"):
+            return str(payload.get("accessToken"))
+    return first_string(payload, "accessToken")
+
+
+def extract_token_expires_at(payload: Any) -> str:
+    if isinstance(payload, dict):
+        session = payload.get("session")
+        if isinstance(session, dict) and session.get("accessTokenExpiresAt"):
+            return str(session.get("accessTokenExpiresAt"))
+        if payload.get("accessTokenExpiresAt"):
+            return str(payload.get("accessTokenExpiresAt"))
+    return first_string(payload, "accessTokenExpiresAt")
+
+
+def extract_grant(payload: Any) -> str:
+    if isinstance(payload, dict):
+        grant = payload.get("grant")
+        if isinstance(grant, str):
+            return grant
+        identity_grant = payload.get("identityGrant")
+        if isinstance(identity_grant, dict) and identity_grant.get("grant"):
+            return str(identity_grant.get("grant"))
+        device_grant = payload.get("deviceGrant")
+        if isinstance(device_grant, dict) and device_grant.get("grant"):
+            return str(device_grant.get("grant"))
+    return first_string(payload, "grant")
+
+
+def token_expired(expires_at: str) -> bool:
+    if not expires_at:
+        return False
+    try:
+        expires = dt.datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    return expires <= dt.datetime.now(dt.UTC) + dt.timedelta(minutes=2)
+
+
 def describe_error(exc: Exception) -> str:
     message = str(exc)
     if isinstance(exc, urllib.error.HTTPError):
@@ -248,6 +294,10 @@ class SiriusXmSession:
         self.now_playing_cache: dict[str, tuple[float, dict[str, str]]] = {}
         self.now_playing_ttl = 20.0
         self.last_now_playing_debug: dict[str, dict[str, Any]] = {}
+        self.edge_access_token = ""
+        self.edge_access_token_expires_at = ""
+        self.edge_device_grant = ""
+        self.edge_identity_grant = ""
 
     @classmethod
     def from_env(cls, path: str = DEFAULT_ENV_FILE) -> "SiriusXmSession":
@@ -310,6 +360,7 @@ class SiriusXmSession:
         self.last_now_playing_debug[station_id] = debug
         if entity_id:
             try:
+                self._ensure_edge_session()
                 data = self._edge_live_update(entity_id)
                 metadata = extract_now_playing(data, station_id, station_name)
                 if is_specific_track_metadata(metadata, station_id, station_name):
@@ -350,19 +401,80 @@ class SiriusXmSession:
             "Origin": "https://www.siriusxm.com",
             "Referer": "https://www.siriusxm.com/",
         }
-        token = self._sxmak_token()
-        gup_id = self._gup_id()
-        if token:
-            headers["Authorization"] = f"Bearer {token}"
-            headers["X-Sxm-Token"] = token
-        if gup_id:
-            headers["X-Sxm-Gup-Id"] = gup_id
+        if self.edge_access_token:
+            headers["Authorization"] = f"Bearer {self.edge_access_token}"
         return urllib.request.Request(
             EDGE_LIVE_UPDATE,
             data=json.dumps(payload, separators=(",", ":")).encode("utf-8"),
             headers=headers,
             method="POST",
         )
+
+    def _ensure_edge_session(self) -> None:
+        if self.edge_access_token and not token_expired(self.edge_access_token_expires_at):
+            return
+        self.edge_login()
+
+    def edge_login(self) -> None:
+        if not self.credentials.configured:
+            self.last_error = "SiriusXM credentials are not configured"
+            raise SiriusXmNotConfigured(self.last_error)
+        device = self._edge_post(
+            "device/v2/devices",
+            {
+                "devicePlatform": "web",
+                "deviceAttributes": {
+                    "browser": {
+                        "app": "web-player",
+                        "appVersion": EDGE_APP_VERSION,
+                        "userAgent": USER_AGENT,
+                    }
+                },
+                "grantVersion": "v2",
+                "tenant": "sxm",
+            },
+        )
+        self.edge_device_grant = extract_grant(device)
+        if not self.edge_device_grant:
+            raise SiriusXmError("SiriusXM edge login did not return a device grant")
+
+        anonymous = self._edge_post("session/v1/sessions/anonymous", {}, bearer=self.edge_device_grant)
+        anonymous_access = extract_access_token(anonymous)
+        if not anonymous_access:
+            raise SiriusXmError("SiriusXM edge login did not return an anonymous access token")
+
+        identity = self._edge_post(
+            "identity/v1/identities/authenticate/password",
+            {"handle": self.credentials.username, "password": self.credentials.password},
+            bearer=anonymous_access,
+        )
+        self.edge_identity_grant = extract_grant(identity)
+        if not self.edge_identity_grant:
+            raise SiriusXmError("SiriusXM edge login did not return an identity grant")
+
+        authenticated = self._edge_post("session/v1/sessions/authenticated", {}, bearer=self.edge_identity_grant)
+        self.edge_access_token = extract_access_token(authenticated)
+        self.edge_access_token_expires_at = extract_token_expires_at(authenticated)
+        if not self.edge_access_token:
+            raise SiriusXmError("SiriusXM edge login did not return an authenticated access token")
+
+    def _edge_post(self, path: str, payload: dict[str, Any], bearer: str = "") -> Any:
+        headers = {
+            "User-Agent": USER_AGENT,
+            "Accept": "application/json,text/plain,*/*",
+            "Content-Type": "application/json;charset=UTF-8",
+            "Origin": "https://www.siriusxm.com",
+            "Referer": "https://www.siriusxm.com/",
+        }
+        if bearer:
+            headers["Authorization"] = f"Bearer {bearer}"
+        request = urllib.request.Request(
+            f"{EDGE_BASE}/{path}",
+            data=json.dumps(payload, separators=(",", ":")).encode("utf-8"),
+            headers=headers,
+            method="POST",
+        )
+        return json.loads(self._opener(request).decode("utf-8", "replace"))
 
     def _live_params(self, channel_info: dict[str, str], station_id: str) -> dict[str, str]:
         return {
