@@ -156,6 +156,7 @@ class SixBackServer(ThreadingHTTPServer):
             r"/api/siriusxm/channels/(?P<station_id>[^/]+)/metadata-proxy-debug",
             handle_siriusxm_metadata_proxy_debug,
         )
+        self.route("GET", r"/api/tunein/search", handle_tunein_search)
         self.route("GET", r"/api/tunein/stations/(?P<station_id>[^/]+)/icy-debug", handle_tunein_icy_debug)
         self.route(
             "GET",
@@ -768,6 +769,67 @@ def normalize_siriusxm_catalog_channel(channel: Json) -> Json:
         "number": number,
         "entity_url": f"https://www.siriusxm.com/player/channel-linear/entity/{guid}" if guid else "",
         "image_url": image_url,
+    }
+
+
+def handle_tunein_search(req: SixBackHandler) -> None:
+    query = parse_qs(urlparse(req.path).query).get("q", [""])[0].strip()
+    if not query:
+        req.send_json({"stations": []})
+        return
+    try:
+        stations = search_tunein_stations(query)
+    except Exception as exc:
+        req.send_json({"error": "tunein_search_failed", "message": str(exc)}, 502)
+        return
+    req.send_json({"stations": stations})
+
+
+def search_tunein_stations(query: str, limit: int = 60) -> list[Json]:
+    url = "http://opml.radiotime.com/Search.ashx?" + urllib.parse.urlencode(
+        {"query": query, "types": "station", "render": "json"}
+    )
+    with urllib.request.urlopen(url, timeout=8) as resp:
+        data = json.loads(resp.read().decode("utf-8", "replace"))
+    items = data.get("body", data)
+    if isinstance(items, dict):
+        items = items.get("children") or items.get("items") or [items]
+    if not isinstance(items, list):
+        return []
+    stations: list[Json] = []
+    seen: set[str] = set()
+    for item in items:
+        station = normalize_tunein_search_station(item)
+        station_id = station.get("station_id", "")
+        if not station_id or station_id in seen:
+            continue
+        stations.append(station)
+        seen.add(station_id)
+        if len(stations) >= limit:
+            break
+    return stations
+
+
+def normalize_tunein_search_station(item: Any) -> Json:
+    if not isinstance(item, dict):
+        return {}
+    item_type = str(item.get("type", "")).strip().lower()
+    if item_type and item_type not in {"audio", "station"}:
+        return {}
+    station_id = str(item.get("guide_id") or item.get("id") or item.get("station_id") or "").strip()
+    if not station_id:
+        url = str(item.get("URL") or item.get("url") or "").strip()
+        station_id = parse_qs(urlparse(url).query).get("id", [""])[0].strip()
+    if not station_id or not station_id.lower().startswith("s"):
+        return {}
+    name = str(item.get("text") or item.get("name") or "").strip()
+    if not name:
+        return {}
+    return {
+        "station_id": station_id,
+        "name": name,
+        "description": str(item.get("subtext") or item.get("description") or "").strip(),
+        "image_url": str(item.get("image") or item.get("logo") or "").strip(),
     }
 
 
@@ -1796,6 +1858,15 @@ ADMIN_HTML = """<!doctype html>
         <input id="siriusChannelSearch" placeholder="Search SiriusXM channels">
       </label>
       <div class="speaker-list" id="siriusChannelList"></div>
+      <hr>
+      <h2>TuneIn</h2>
+      <div class="toolbar">
+        <button class="secondary" id="searchTuneInStations">Search Stations</button>
+      </div>
+      <label class="wide">Station Search
+        <input id="tuneinStationSearch" placeholder="Search TuneIn stations">
+      </label>
+      <div class="speaker-list" id="tuneinStationList"></div>
     </section>
     <section>
       <h2 id="selectedTitle">Presets</h2>
@@ -1809,7 +1880,7 @@ ADMIN_HTML = """<!doctype html>
     </section>
   </main>
   <script>
-    const state = { speakers: [], selected: null, presets: [], sirius: null, siriusChannels: [], cardNotices: {} };
+    const state = { speakers: [], selected: null, presets: [], sirius: null, siriusChannels: [], tuneinStations: [], cardNotices: {} };
     const $ = (id) => document.getElementById(id);
 
     async function api(path, options = {}) {
@@ -1942,6 +2013,9 @@ ADMIN_HTML = """<!doctype html>
             <label class="wide tunein">TuneIn Station ID
               <input data-field="station_id" value="${escapeAttr(preset.station_id || '')}">
             </label>
+            <label class="wide tunein tunein-picker-row">TuneIn Station
+              <select data-role="tunein-picker"></select>
+            </label>
             <label class="wide sirius">SiriusXM Channel
               <select data-role="sirius-picker"></select>
             </label>
@@ -1956,6 +2030,7 @@ ADMIN_HTML = """<!doctype html>
           </div>
           <div class="toolbar">
             <button data-action="save">Save</button>
+            <button class="secondary" data-action="pick-tunein">Use Station</button>
             <button class="secondary" data-action="pick-sirius">Use Channel</button>
             <button class="secondary" data-action="refresh-sirius">Refresh SiriusXM</button>
             <button class="danger" data-action="clear">Clear</button>
@@ -1973,6 +2048,7 @@ ADMIN_HTML = """<!doctype html>
           preset.source === 'LOCAL_INTERNET_RADIO' ? 'LOCAL_INTERNET_RADIO' :
           preset.source === 'SIRIUSXM' ? 'SIRIUSXM' : 'TUNEIN';
         populateCopyOptions(card);
+        populateTuneInPicker(card);
         populateSiriusPicker(card);
         syncSourceFields(card);
         applyCardNotice(card);
@@ -1982,6 +2058,7 @@ ADMIN_HTML = """<!doctype html>
           syncSourceFields(card);
         };
         card.querySelector('[data-action="save"]').onclick = () => savePreset(card);
+        card.querySelector('[data-action="pick-tunein"]').onclick = () => pickTuneInStation(card);
         card.querySelector('[data-action="pick-sirius"]').onclick = () => pickSiriusChannel(card);
         card.querySelector('[data-action="refresh-sirius"]').onclick = () => refreshSiriusPreset(card);
         card.querySelector('[data-action="clear"]').onclick = () => clearPreset(card);
@@ -1992,9 +2069,10 @@ ADMIN_HTML = """<!doctype html>
     function syncSourceFields(card) {
       const source = card.querySelector('[data-field="source"]').value;
       const raw = card.querySelector('[data-field="raw_content_item"]').value;
-      card.querySelector('.tunein').style.display = source === 'TUNEIN' ? 'grid' : 'none';
+      card.querySelectorAll('.tunein').forEach((el) => { el.style.display = source === 'TUNEIN' ? 'grid' : 'none'; });
       card.querySelector('.sirius').style.display = source === 'SIRIUSXM' ? 'grid' : 'none';
       card.querySelector('.stream').style.display = source === 'LOCAL_INTERNET_RADIO' ? 'grid' : 'none';
+      card.querySelector('[data-action="pick-tunein"]').style.display = source === 'TUNEIN' ? 'inline-flex' : 'none';
       card.querySelector('[data-action="pick-sirius"]').style.display = source === 'SIRIUSXM' ? 'inline-flex' : 'none';
       card.querySelector('[data-action="refresh-sirius"]').style.display = source === 'SIRIUSXM' ? 'inline-flex' : 'none';
       const msg = card.querySelector('[data-role="card-status"]');
@@ -2009,6 +2087,11 @@ ADMIN_HTML = """<!doctype html>
         msg.textContent = state.siriusChannels.length
           ? 'Choose a channel, use it, then save the preset.'
           : 'Load SiriusXM channels, then choose one and save the preset.';
+        msg.className = 'status';
+      } else if (source === 'TUNEIN') {
+        msg.textContent = state.tuneinStations.length
+          ? 'Choose a station, use it, then save the preset.'
+          : 'Search TuneIn stations, then choose one and save the preset.';
         msg.className = 'status';
       } else {
         msg.textContent = '';
@@ -2057,6 +2140,55 @@ ADMIN_HTML = """<!doctype html>
       }).join('');
     }
 
+    async function searchTuneInStations() {
+      const query = $('tuneinStationSearch').value.trim();
+      if (!query) {
+        setStatus('Enter a TuneIn station search first', 'warn');
+        return;
+      }
+      const data = await api(`/api/tunein/search?q=${encodeURIComponent(query)}`);
+      state.tuneinStations = data.stations || [];
+      renderTuneInStations();
+      document.querySelectorAll('.preset-card').forEach((card) => {
+        populateTuneInPicker(card);
+        syncSourceFields(card);
+      });
+      setStatus(`Loaded ${state.tuneinStations.length} TuneIn station(s)`, 'ok');
+    }
+
+    function renderTuneInStations() {
+      const list = $('tuneinStationList');
+      const stations = state.tuneinStations.slice(0, 60);
+      if (!stations.length) {
+        list.innerHTML = '<div class="meta">Search to browse TuneIn stations.</div>';
+        return;
+      }
+      list.innerHTML = stations.map((station) => {
+        const detail = station.description ? `${station.station_id || ''} - ${station.description}` : station.station_id || '';
+        return `<div class="speaker-button"><strong>${escapeHtml(station.name || station.station_id)}</strong><div class="meta">${escapeHtml(detail)}</div></div>`;
+      }).join('');
+    }
+
+    function populateTuneInPicker(card) {
+      const picker = card.querySelector('[data-role="tunein-picker"]');
+      if (!picker) return;
+      const current = card.querySelector('[data-field="station_id"]').value.trim();
+      picker.innerHTML = '<option value="">Select station</option>';
+      for (const station of state.tuneinStations) {
+        const option = document.createElement('option');
+        option.value = station.station_id || '';
+        option.textContent = station.description
+          ? `${station.name || station.station_id} - ${station.description}`
+          : `${station.name || station.station_id}`;
+        option.dataset.name = station.name || '';
+        option.dataset.imageUrl = station.image_url || '';
+        picker.appendChild(option);
+      }
+      if (current && [...picker.options].some((option) => option.value === current)) {
+        picker.value = current;
+      }
+    }
+
     function populateSiriusPicker(card) {
       const picker = card.querySelector('[data-role="sirius-picker"]');
       if (!picker) return;
@@ -2094,6 +2226,27 @@ ADMIN_HTML = """<!doctype html>
       card.querySelector('[data-field="raw_content_item"]').value = '';
       syncSourceFields(card);
       status.textContent = 'Channel ready; save this preset to assign it.';
+      status.className = 'status ok';
+    }
+
+    function pickTuneInStation(card) {
+      const picker = card.querySelector('[data-role="tunein-picker"]');
+      const option = picker.selectedOptions[0];
+      const status = card.querySelector('[data-role="card-status"]');
+      if (!option || !option.value) {
+        status.textContent = 'Select a TuneIn station first';
+        status.className = 'status error';
+        return;
+      }
+      card.querySelector('[data-field="source"]').value = 'TUNEIN';
+      card.querySelector('[data-field="station_id"]').value = option.value;
+      card.querySelector('[data-field="name"]').value = option.dataset.name || option.textContent;
+      card.querySelector('[data-field="image_url"]').value = option.dataset.imageUrl || '';
+      card.querySelector('[data-field="entity_url"]').value = '';
+      card.querySelector('[data-field="stream_url"]').value = '';
+      card.querySelector('[data-field="raw_content_item"]').value = '';
+      syncSourceFields(card);
+      status.textContent = 'Station ready; save this preset to assign it.';
       status.className = 'status ok';
     }
 
@@ -2200,6 +2353,10 @@ ADMIN_HTML = """<!doctype html>
     $('refreshSiriusStatus').onclick = () => loadSiriusStatus().catch((err) => setStatus(err.message, 'error'));
     $('loadSiriusCatalog').onclick = () => loadSiriusCatalog().catch((err) => setStatus(err.message, 'error'));
     $('siriusChannelSearch').oninput = renderSiriusCatalog;
+    $('searchTuneInStations').onclick = () => searchTuneInStations().catch((err) => setStatus(err.message, 'error'));
+    $('tuneinStationSearch').onkeydown = (event) => {
+      if (event.key === 'Enter') searchTuneInStations().catch((err) => setStatus(err.message, 'error'));
+    };
     $('loginSirius').onclick = async () => {
       try {
         const data = await api('/api/siriusxm/session/login', { method: 'POST', body: '{}' });

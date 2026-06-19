@@ -38,12 +38,14 @@ from sixback_ubuntu.sixback_ubuntu.server import (
     handle_siriusxm_now_playing_debug,
     normalize_siriusxm_catalog_channel,
     maybe_override_siriusxm_preset_press,
+    normalize_tunein_search_station,
     prepare_admin_preset,
     pressed_preset_slot,
     remember_siriusxm_station_alias,
     resolve_siriusxm_stream_url,
     resolve_siriusxm_station_alias,
     sanitize_siriusxm_error,
+    search_tunein_stations,
     siriusxm_metadata_proxy_debug_payload,
     tunein_icy_debug_payload,
 )
@@ -1029,6 +1031,52 @@ class SiriusXmAuthTests(unittest.TestCase):
         self.assertTrue(payload["icy"]["icy_metadata_supported"])
         self.assertEqual(payload["icy"]["metadata"]["title"], "Song")
 
+    def test_normalize_tunein_search_station_extracts_station_fields(self) -> None:
+        station = normalize_tunein_search_station(
+            {
+                "type": "audio",
+                "text": "The Answer Chicago",
+                "subtext": "AM 560",
+                "guide_id": "s17947",
+                "image": "http://cdn.example/s17947.png",
+            }
+        )
+
+        self.assertEqual(
+            station,
+            {
+                "station_id": "s17947",
+                "name": "The Answer Chicago",
+                "description": "AM 560",
+                "image_url": "http://cdn.example/s17947.png",
+            },
+        )
+
+    def test_search_tunein_stations_uses_radiotime_search_endpoint(self) -> None:
+        response = {
+            "body": [
+                {
+                    "type": "audio",
+                    "text": "The Answer Chicago",
+                    "guide_id": "s17947",
+                    "image": "http://cdn.example/s17947.png",
+                },
+                {"type": "link", "text": "Browse", "guide_id": "c1"},
+            ]
+        }
+
+        with patch("sixback_ubuntu.sixback_ubuntu.server.urllib.request.urlopen") as urlopen:
+            urlopen.return_value.__enter__.return_value.read.return_value = json.dumps(response).encode("utf-8")
+
+            stations = search_tunein_stations("answer chicago")
+
+        requested_url = urlopen.call_args.args[0]
+        self.assertIn("Search.ashx", requested_url)
+        self.assertIn("query=answer+chicago", requested_url)
+        self.assertEqual(len(stations), 1)
+        self.assertEqual(stations[0]["station_id"], "s17947")
+        self.assertEqual(stations[0]["name"], "The Answer Chicago")
+
     def test_siriusxm_metadata_proxy_debug_identifies_hls_not_icy(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             store = Store(os.path.join(tmp, "state.sqlite3"))
@@ -1215,6 +1263,27 @@ class SiriusXmAuthTests(unittest.TestCase):
         self.assertIn("loadSiriusCatalog", ADMIN_HTML)
         self.assertIn("data-action=\"pick-sirius\"", ADMIN_HTML)
         self.assertIn("Use Channel", ADMIN_HTML)
+
+    def test_admin_ui_exposes_tunein_station_picker(self) -> None:
+        self.assertIn("tuneinStationSearch", ADMIN_HTML)
+        self.assertIn("searchTuneInStations", ADMIN_HTML)
+        self.assertIn("data-action=\"pick-tunein\"", ADMIN_HTML)
+        self.assertIn("Use Station", ADMIN_HTML)
+
+    def test_tunein_search_route_is_registered(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Store(os.path.join(tmp, "state.sqlite3"))
+            server = SixBackServer(("127.0.0.1", 0), store, "http://ubuntu.example:8000")
+            try:
+                matched = any(
+                    method == "GET" and pattern.fullmatch("/api/tunein/search")
+                    for method, pattern, _handler in server.routes
+                )
+            finally:
+                server.server_close()
+                store.conn.close()
+
+        self.assertTrue(matched)
 
     def test_admin_ui_persists_save_confirmation_after_reload(self) -> None:
         self.assertIn("cardNotices", ADMIN_HTML)
