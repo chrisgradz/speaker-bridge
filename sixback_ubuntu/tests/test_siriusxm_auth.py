@@ -7,6 +7,7 @@ import urllib.error
 import json
 from io import BytesIO
 from http.cookiejar import Cookie
+from types import SimpleNamespace
 
 from sixback_ubuntu.sixback_ubuntu.db import Store
 from sixback_ubuntu.sixback_ubuntu.cloud import siriusxm_now_playing, siriusxm_station
@@ -21,6 +22,7 @@ from sixback_ubuntu.sixback_ubuntu.siriusxm import (
     should_refresh_stream,
 )
 from sixback_ubuntu.sixback_ubuntu.server import (
+    handle_siriusxm_now_playing_debug,
     resolve_siriusxm_stream_url,
     sanitize_siriusxm_error,
 )
@@ -396,6 +398,108 @@ class SiriusXmAuthTests(unittest.TestCase):
         self.assertEqual(metadata["artistName"], "New Order")
         self.assertTrue(any("liveUpdate" in url for url in requests))
         self.assertTrue(any("tune/now-playing-live" in url for url in requests))
+
+    def test_session_now_playing_records_debug_sources_and_allows_forced_probe(self) -> None:
+        requests = []
+
+        def opener(request):
+            requests.append(request.full_url)
+            if "modify/authentication" in request.full_url or "resume" in request.full_url:
+                return b'{"ModuleListResponse":{"status":1}}'
+            if "liveUpdate" in request.full_url:
+                raise urllib.error.URLError("edge unavailable")
+            if "tune/now-playing-live" in request.full_url:
+                return json.dumps(
+                    {
+                        "channelName": "1st Wave",
+                        "items": [
+                            {
+                                "name": "Blue Monday",
+                                "artistName": "New Order",
+                                "isInterstitial": False,
+                            }
+                        ],
+                    }
+                ).encode("utf-8")
+            raise AssertionError(f"unexpected URL {request.full_url}")
+
+        session = SiriusXmSession(
+            SiriusXmCredentials("listener@example.com", "secret password"),
+            opener=opener,
+        )
+        channel = {
+            "name": "1st Wave",
+            "entity_url": "https://www.siriusxm.com/player/channel-linear/entity/65f04311-3581-256c-97b9-279838d6ff5e",
+        }
+
+        session.now_playing("firstwave", channel)
+        session.now_playing("firstwave", channel)
+        session.now_playing("firstwave", channel, force=True)
+
+        debug = session.last_now_playing_debug["firstwave"]
+        self.assertEqual(debug["station_id"], "firstwave")
+        self.assertEqual(debug["entity_id"], "65f04311-3581-256c-97b9-279838d6ff5e")
+        self.assertEqual(debug["sources"][0]["source"], "edge_live_update")
+        self.assertEqual(debug["sources"][0]["result"], "error")
+        self.assertEqual(debug["sources"][1]["source"], "k2_now_playing")
+        self.assertEqual(debug["sources"][1]["result"], "specific_track")
+        self.assertEqual(sum("tune/now-playing-live" in url for url in requests), 2)
+
+    def test_debug_handler_forces_now_playing_probe_and_returns_source_summary(self) -> None:
+        class FakeSession:
+            credentials = SiriusXmCredentials("listener@example.com", "secret password")
+
+            def __init__(self) -> None:
+                self.force = None
+                self.channel = None
+                self.last_now_playing_debug = {}
+
+            def now_playing(self, station_id, channel, force=False):
+                self.force = force
+                self.channel = channel
+                self.last_now_playing_debug[station_id] = {
+                    "station_id": station_id,
+                    "sources": [{"source": "edge_live_update", "result": "station_only"}],
+                }
+                return {"trackName": "1st Wave", "artistName": "SiriusXM"}
+
+            def status(self):
+                return {"configured": True}
+
+        class FakeRequest:
+            def __init__(self, store, session) -> None:
+                self.server = SimpleNamespace(store=store, siriusxm=session)
+                self.status = None
+                self.body = None
+
+            def send_json(self, body, status=200):
+                self.body = body
+                self.status = status
+
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Store(os.path.join(tmp, "state.sqlite3"))
+            store.upsert_siriusxm_channel(
+                "firstwave",
+                {
+                    "name": "1st Wave",
+                    "entity_url": "https://www.siriusxm.com/player/channel-linear/entity/entity-id",
+                    "stream_url": "https://live.example.test/playlist.m3u8?token=secret",
+                },
+            )
+            session = FakeSession()
+            req = FakeRequest(store, session)
+
+            try:
+                handle_siriusxm_now_playing_debug(req, "firstwave")
+            finally:
+                store.conn.close()
+
+        self.assertEqual(req.status, 200)
+        self.assertTrue(session.force)
+        self.assertEqual(session.channel["name"], "1st Wave")
+        self.assertEqual(req.body["metadata"]["trackName"], "1st Wave")
+        self.assertEqual(req.body["debug"]["sources"][0]["source"], "edge_live_update")
+        self.assertNotIn("stream_url", req.body["channel"])
 
     def test_server_reuses_cached_authenticated_stream_url(self) -> None:
         class FakeSession:

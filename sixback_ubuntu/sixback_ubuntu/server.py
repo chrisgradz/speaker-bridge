@@ -138,6 +138,11 @@ class SixBackServer(ThreadingHTTPServer):
         self.route("GET", r"/api/siriusxm/channels/(?P<station_id>[^/]+)", handle_siriusxm_channel_get)
         self.route("PUT", r"/api/siriusxm/channels/(?P<station_id>[^/]+)", handle_siriusxm_channel_put)
         self.route("POST", r"/api/siriusxm/channels/(?P<station_id>[^/]+)/refresh", handle_siriusxm_channel_refresh)
+        self.route(
+            "GET",
+            r"/api/siriusxm/channels/(?P<station_id>[^/]+)/now-playing-debug",
+            handle_siriusxm_now_playing_debug,
+        )
         self.route("GET", r"/bmx/registry/v1/services", handle_bmx_services)
         self.route("GET", r"/bmx/registry/v1/servicesAvailability", handle_bmx_services_availability)
         self.route("GET", r"/streaming/sourceproviders", handle_sourceproviders)
@@ -385,6 +390,49 @@ def handle_siriusxm_channel_refresh(req: SixBackHandler, station_id: str) -> Non
             "channel": req.server.store.get_siriusxm_channel(station_id),
             "session": req.server.siriusxm.status(),
         }
+    )
+
+
+def handle_siriusxm_now_playing_debug(req: SixBackHandler, station_id: str) -> None:
+    channel = req.server.store.get_siriusxm_channel(station_id)
+    visible_channel = {
+        "station_id": channel.get("station_id") or station_id,
+        "name": channel.get("name", ""),
+        "entity_url": channel.get("entity_url", ""),
+        "has_stream_url": bool(channel.get("stream_url")),
+    }
+    if not req.server.siriusxm.credentials.configured:
+        req.send_json(
+            {
+                "station_id": station_id,
+                "channel": visible_channel,
+                "metadata": {},
+                "debug": {"sources": [], "error": "SiriusXM credentials are not configured"},
+                "session": req.server.siriusxm.status(),
+            },
+            501,
+        )
+        return
+    try:
+        metadata = req.server.siriusxm.now_playing(station_id, channel, force=True)
+        status = 200
+        error = ""
+    except Exception as exc:
+        metadata = {}
+        status = 502
+        error = sanitize_siriusxm_error(str(exc), req.server.siriusxm.credentials)
+    debug = dict(req.server.siriusxm.last_now_playing_debug.get(station_id, {}))
+    if error:
+        debug["error"] = error
+    req.send_json(
+        {
+            "station_id": station_id,
+            "channel": visible_channel,
+            "metadata": metadata,
+            "debug": debug,
+            "session": req.server.siriusxm.status(),
+        },
+        status,
     )
 
 

@@ -208,6 +208,31 @@ def iso_z(value: dt.datetime) -> str:
     return value.isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
+def metadata_debug(source: str, result: str, metadata: dict[str, str], payload: Any) -> dict[str, Any]:
+    debug: dict[str, Any] = {
+        "source": source,
+        "result": result,
+        "trackName": metadata.get("trackName", ""),
+        "artistName": metadata.get("artistName", ""),
+        "albumName": metadata.get("albumName", ""),
+        "image": bool(metadata.get("imageUrl")),
+    }
+    if isinstance(payload, dict):
+        debug["top_keys"] = sorted(str(key) for key in payload.keys())[:20]
+    else:
+        debug["payload_type"] = type(payload).__name__
+    return debug
+
+
+def describe_error(exc: Exception) -> str:
+    message = str(exc)
+    if isinstance(exc, urllib.error.HTTPError):
+        message = f"HTTP {exc.code}"
+    elif isinstance(exc, urllib.error.URLError):
+        message = str(exc.reason)
+    return f"{type(exc).__name__}: {message}"[:240]
+
+
 class SiriusXmSession:
     def __init__(
         self,
@@ -222,6 +247,7 @@ class SiriusXmSession:
         self.channels: list[dict[str, Any]] = []
         self.now_playing_cache: dict[str, tuple[float, dict[str, str]]] = {}
         self.now_playing_ttl = 20.0
+        self.last_now_playing_debug: dict[str, dict[str, Any]] = {}
 
     @classmethod
     def from_env(cls, path: str = DEFAULT_ENV_FILE) -> "SiriusXmSession":
@@ -260,28 +286,50 @@ class SiriusXmSession:
         variant = self._resolve_playlist_variant(url)
         return self._with_stream_auth(variant) if variant else self._with_stream_auth(url)
 
-    def now_playing(self, station_id: str, channel: dict[str, Any] | None = None) -> dict[str, str]:
+    def now_playing(
+        self,
+        station_id: str,
+        channel: dict[str, Any] | None = None,
+        force: bool = False,
+    ) -> dict[str, str]:
         cached = self.now_playing_cache.get(station_id)
         now = time.time()
-        if cached and now - cached[0] < self.now_playing_ttl:
+        if not force and cached and now - cached[0] < self.now_playing_ttl:
             return cached[1]
         if not self.is_session_authenticated():
             self.login()
         channel_data = channel or {}
         station_name = str(channel_data.get("name", ""))
         entity_id = extract_entity_id(str(channel_data.get("entity_url", "")))
+        debug: dict[str, Any] = {
+            "station_id": station_id,
+            "station_name": station_name,
+            "entity_id": entity_id,
+            "sources": [],
+        }
+        self.last_now_playing_debug[station_id] = debug
         if entity_id:
             try:
                 data = self._edge_live_update(entity_id)
                 metadata = extract_now_playing(data, station_id, station_name)
                 if is_specific_track_metadata(metadata, station_id, station_name):
+                    debug["sources"].append(metadata_debug("edge_live_update", "specific_track", metadata, data))
                     self.now_playing_cache[station_id] = (now, metadata)
                     return metadata
-            except Exception:
-                pass
+                debug["sources"].append(metadata_debug("edge_live_update", "station_only", metadata, data))
+            except Exception as exc:
+                debug["sources"].append({"source": "edge_live_update", "result": "error", "error": describe_error(exc)})
         channel_info = self.resolve_channel(station_id, channel_data)
         data = self._get_k2("tune/now-playing-live", self._live_params(channel_info, station_id))
         metadata = extract_now_playing(data, station_id, station_name)
+        debug["sources"].append(
+            metadata_debug(
+                "k2_now_playing",
+                "specific_track" if is_specific_track_metadata(metadata, station_id, station_name) else "station_only",
+                metadata,
+                data,
+            )
+        )
         self.now_playing_cache[station_id] = (now, metadata)
         return metadata
 
