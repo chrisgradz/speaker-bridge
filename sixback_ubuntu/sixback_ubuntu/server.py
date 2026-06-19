@@ -414,7 +414,8 @@ def handle_siriusxm_proxy_playlist(req: SixBackHandler, station_id: str) -> None
     except Exception as exc:
         req.send_json({"error": type(exc).__name__, "message": str(exc)}, 502)
         return
-    rewritten = rewrite_hls_playlist(body, stream_url, req.server)
+    trimmed = trim_hls_playlist(body)
+    rewritten = rewrite_hls_playlist(trimmed, stream_url, req.server)
     capture_cloud_response(req, "siriusxm", summarize_hls_playlist(station_id, rewritten))
     req.send_bytes(rewritten.encode("utf-8"), content_type="application/x-mpegURL")
 
@@ -464,6 +465,48 @@ def rewrite_hls_playlist(body: str, playlist_url: str, server: SixBackServer) ->
         else:
             rewritten.append(line)
     return "\n".join(rewritten) + "\n"
+
+
+def trim_hls_playlist(body: str, max_segments: int = 6) -> str:
+    header: list[str] = []
+    groups: list[list[str]] = []
+    pending: list[str] = []
+    seen_media = False
+    media_sequence = 0
+
+    for line in body.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("#EXT-X-MEDIA-SEQUENCE:"):
+            try:
+                media_sequence = int(stripped.split(":", 1)[1])
+            except ValueError:
+                media_sequence = 0
+            header.append(line)
+            continue
+        if stripped and not stripped.startswith("#"):
+            seen_media = True
+            groups.append([*pending, line])
+            pending = []
+            continue
+        if seen_media:
+            pending.append(line)
+        else:
+            header.append(line)
+
+    if len(groups) <= max_segments:
+        return body
+
+    skipped = len(groups) - max_segments
+    trimmed_header: list[str] = []
+    for line in header:
+        if line.strip().startswith("#EXT-X-MEDIA-SEQUENCE:"):
+            trimmed_header.append(f"#EXT-X-MEDIA-SEQUENCE:{media_sequence + skipped}")
+        else:
+            trimmed_header.append(line)
+    trimmed: list[str] = [*trimmed_header]
+    for group in groups[-max_segments:]:
+        trimmed.extend(group)
+    return "\n".join(trimmed) + "\n"
 
 
 def rewrite_hls_key_line(line: str, playlist_url: str, server: SixBackServer) -> str:
