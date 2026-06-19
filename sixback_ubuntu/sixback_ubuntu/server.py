@@ -7,6 +7,7 @@ import json
 import os
 import re
 import socket
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -112,6 +113,7 @@ class SixBackServer(ThreadingHTTPServer):
         self.public_base = public_base.rstrip("/")
         self.siriusxm = SiriusXmSession.from_env(os.environ.get("SIXBACK_SIRIUSXM_ENV_FILE", DEFAULT_ENV_FILE))
         self.siriusxm_proxy_urls: dict[str, str] = {}
+        self.siriusxm_fetch_cache: dict[str, tuple[float, bytes]] = {}
         self.routes: list[tuple[str, re.Pattern[str], Callable[..., None]]] = []
         self._register_routes()
 
@@ -148,13 +150,13 @@ class SixBackServer(ThreadingHTTPServer):
         self.route("GET", r"/streaming/sourceproviders", handle_sourceproviders)
         self.route("POST", r"/bmx/tunein/v1/token", handle_tunein_token)
         self.route("GET", r"/bmx/tunein/v1/playback/station/(?P<station_id>[^/]+)", handle_tunein_station)
-        self.route("POST", r"/bmx/tunein/v1/report", handle_empty)
+        self.route("POST", r"/bmx/tunein/v1/report", handle_report)
         self.route("GET", r"/core02/svc-bmx-adapter-siriusxm-everest-eco1/prod/live-adapter/token", handle_siriusxm_token)
         self.route("POST", r"/core02/svc-bmx-adapter-siriusxm-everest-eco1/prod/live-adapter/token", handle_siriusxm_token)
         self.route("GET", r"/core02/svc-bmx-adapter-siriusxm-everest-eco1/prod/live-adapter/availability", handle_siriusxm_availability)
         self.route("GET", r"/core02/svc-bmx-adapter-siriusxm-everest-eco1/prod/live-adapter/playback/station/(?P<station_id>[^/]+)", handle_siriusxm_station)
         self.route("GET", r"/core02/svc-bmx-adapter-siriusxm-everest-eco1/prod/live-adapter/v1/now-playing/station/(?P<station_id>[^/]+)", handle_siriusxm_now_playing)
-        self.route("POST", r"/core02/svc-bmx-adapter-siriusxm-everest-eco1/prod/live-adapter/v1/report", handle_empty)
+        self.route("POST", r"/core02/svc-bmx-adapter-siriusxm-everest-eco1/prod/live-adapter/v1/report", handle_report)
         self.route("GET", r"/siriusxm/proxy/(?P<station_id>[^/]+)/playlist\.m3u8", handle_siriusxm_proxy_playlist)
         self.route("GET", r"/siriusxm/proxy/fetch/(?P<token>[^/]+)", handle_siriusxm_proxy_fetch)
         self.route("GET", r"/siriusxm/proxy/fetch", handle_siriusxm_proxy_fetch)
@@ -567,7 +569,7 @@ def handle_siriusxm_proxy_playlist(req: SixBackHandler, station_id: str) -> None
         req.send_json({"error": "siriusxm_refresh_failed", "message": message}, 502)
         return
     try:
-        body = fetch_siriusxm_url(stream_url).decode("utf-8", "replace")
+        body = cached_fetch_siriusxm_url(stream_url, req.server.siriusxm_fetch_cache).decode("utf-8", "replace")
     except Exception as exc:
         if should_retry_siriusxm_fetch(req.server.siriusxm, exc):
             try:
@@ -577,7 +579,11 @@ def handle_siriusxm_proxy_playlist(req: SixBackHandler, station_id: str) -> None
                     station_id,
                     force=True,
                 )
-                body = fetch_siriusxm_url(stream_url).decode("utf-8", "replace")
+                body = cached_fetch_siriusxm_url(
+                    stream_url,
+                    req.server.siriusxm_fetch_cache,
+                    force=True,
+                ).decode("utf-8", "replace")
             except Exception as retry_exc:
                 message = sanitize_siriusxm_error(str(retry_exc), req.server.siriusxm.credentials)
                 capture_cloud_response(req, "siriusxm", f"authenticated playlist fetch failed station={station_id}: {message}")
@@ -610,7 +616,7 @@ def handle_siriusxm_proxy_fetch(req: SixBackHandler, token: str = "") -> None:
         req.send_bytes(SIRIUSXM_HLS_AES_KEY, content_type="application/octet-stream")
         return
     try:
-        body = fetch_siriusxm_url(target)
+        body = cached_fetch_siriusxm_url(target, req.server.siriusxm_fetch_cache)
     except Exception as exc:
         capture_cloud_response(req, "siriusxm", describe_siriusxm_fetch_error(target, exc))
         req.send_json({"error": type(exc).__name__, "message": str(exc)}, 502)
@@ -638,6 +644,28 @@ def fetch_siriusxm_url(url: str) -> bytes:
     )
     with urllib.request.urlopen(request, timeout=12) as response:
         return response.read()
+
+
+def cached_fetch_siriusxm_url(
+    url: str,
+    cache: dict[str, tuple[float, bytes]],
+    now: float | None = None,
+    fetcher: Callable[[str], bytes] = fetch_siriusxm_url,
+    ttl: float = 8.0,
+    force: bool = False,
+) -> bytes:
+    current = time.time() if now is None else now
+    cached = cache.get(url)
+    if not force and cached and current - cached[0] < ttl:
+        return cached[1]
+    body = fetcher(url)
+    cache[url] = (current, body)
+    if len(cache) > 512:
+        cutoff = current - ttl
+        for key, (stored_at, _) in list(cache.items()):
+            if stored_at < cutoff:
+                cache.pop(key, None)
+    return body
 
 
 def is_siriusxm_hls_key(url: str) -> bool:
@@ -979,6 +1007,17 @@ def _tag(xml: str, name: str) -> str:
 
 def handle_updates(req: SixBackHandler) -> None:
     req.send_text('<?xml version="1.0" encoding="UTF-8"?><updates/>', content_type="application/xml")
+
+
+def report_response() -> Json:
+    return {"nextReportIn": 1800}
+
+
+def handle_report(req: SixBackHandler, **_: str) -> None:
+    length = int(req.headers.get("Content-Length", "0") or "0")
+    if length:
+        req.rfile.read(length)
+    req.send_json(report_response())
 
 
 def handle_empty(req: SixBackHandler, **_: str) -> None:

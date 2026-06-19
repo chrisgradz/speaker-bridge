@@ -4,7 +4,9 @@ import unittest
 
 from sixback_ubuntu.sixback_ubuntu.server import (
     SIRIUSXM_HLS_AES_KEY,
+    cached_fetch_siriusxm_url,
     is_siriusxm_hls_key,
+    report_response,
     rewrite_hls_playlist,
     should_capture_siriusxm_playlist_success,
     should_capture_siriusxm_fetch_success,
@@ -161,6 +163,27 @@ class HlsProxyTests(unittest.TestCase):
             )
         )
         self.assertTrue(should_capture_siriusxm_fetch_success("https://example.test/other-resource"))
+
+    def test_report_response_slows_periodic_reports(self) -> None:
+        self.assertEqual(report_response(), {"nextReportIn": 1800})
+
+    def test_cached_fetch_reuses_short_lived_upstream_response(self) -> None:
+        calls = []
+
+        def fetcher(url: str) -> bytes:
+            calls.append(url)
+            return f"body-{len(calls)}".encode("utf-8")
+
+        cache: dict[str, tuple[float, bytes]] = {}
+
+        first = cached_fetch_siriusxm_url("https://example.test/live.m3u8", cache, now=100.0, fetcher=fetcher)
+        second = cached_fetch_siriusxm_url("https://example.test/live.m3u8", cache, now=104.0, fetcher=fetcher)
+        third = cached_fetch_siriusxm_url("https://example.test/live.m3u8", cache, now=111.0, fetcher=fetcher)
+
+        self.assertEqual(first, b"body-1")
+        self.assertEqual(second, b"body-1")
+        self.assertEqual(third, b"body-2")
+        self.assertEqual(calls, ["https://example.test/live.m3u8", "https://example.test/live.m3u8"])
 
 
 if __name__ == "__main__":
