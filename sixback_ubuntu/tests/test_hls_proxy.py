@@ -3,6 +3,8 @@ from __future__ import annotations
 import unittest
 
 from sixback_ubuntu.sixback_ubuntu.server import (
+    SIRIUSXM_HLS_AES_KEY,
+    is_siriusxm_hls_key,
     rewrite_hls_playlist,
     summarize_hls_playlist,
     trim_hls_playlist,
@@ -76,6 +78,16 @@ class HlsProxyTests(unittest.TestCase):
                 "https://example.test/live/audio/segment.aac",
             ],
         )
+
+    def test_siriusxm_key_detection(self) -> None:
+        self.assertEqual(len(SIRIUSXM_HLS_AES_KEY), 16)
+        self.assertTrue(
+            is_siriusxm_hls_key(
+                "https://api.edge-gateway.siriusxm.com/playback/key/v1/00000000-0000-0000-0000-000000000000"
+            )
+        )
+        self.assertFalse(is_siriusxm_hls_key("https://api.edge-gateway.siriusxm.com/other/key"))
+        self.assertFalse(is_siriusxm_hls_key("https://example.test/playback/key/v1/foo"))
 
 
 if __name__ == "__main__":

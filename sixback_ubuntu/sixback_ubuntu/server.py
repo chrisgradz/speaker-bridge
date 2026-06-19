@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import hashlib
 import json
 import re
@@ -36,6 +37,7 @@ from .speaker import import_presets, migrate_speaker, probe_speaker
 
 
 Json = dict[str, Any]
+SIRIUSXM_HLS_AES_KEY = base64.b64decode("0Nsco7MAgxowGvkUT8aYag==")
 
 
 class SixBackHandler(BaseHTTPRequestHandler):
@@ -426,6 +428,14 @@ def handle_siriusxm_proxy_fetch(req: SixBackHandler, token: str = "") -> None:
     if not target.startswith("https://"):
         req.send_json({"error": "invalid_proxy_url"}, 400)
         return
+    if is_siriusxm_hls_key(target):
+        capture_cloud_response(
+            req,
+            "siriusxm",
+            f"served local hls key path={urlparse(target).path} bytes={len(SIRIUSXM_HLS_AES_KEY)}",
+        )
+        req.send_bytes(SIRIUSXM_HLS_AES_KEY, content_type="application/octet-stream")
+        return
     try:
         body = fetch_siriusxm_url(target)
     except Exception as exc:
@@ -453,6 +463,13 @@ def fetch_siriusxm_url(url: str) -> bytes:
     )
     with urllib.request.urlopen(request, timeout=12) as response:
         return response.read()
+
+
+def is_siriusxm_hls_key(url: str) -> bool:
+    parsed = urlparse(url)
+    return parsed.netloc == "api.edge-gateway.siriusxm.com" and parsed.path.startswith(
+        "/playback/key/"
+    )
 
 
 def rewrite_hls_playlist(body: str, playlist_url: str, server: SixBackServer) -> str:
