@@ -24,6 +24,17 @@ another slot. Creating brand-new SiriusXM presets from login or channel search
 is not supported yet because that requires the authenticated SiriusXM/Bose
 adapter flow rather than only a channel ID.
 
+The MVP also includes a first-pass SiriusXM adapter endpoint for preserved
+presets:
+
+```text
+/core02/svc-bmx-adapter-siriusxm-everest-eco1/prod/live-adapter/playback/station/{channel}
+```
+
+This removes the local `404` when a preserved SiriusXM preset is pressed. If the
+speaker then requests `/siriusxm/needs-auth/{channel}`, the remaining missing
+piece is authenticated SiriusXM stream URL resolution.
+
 This MVP is derived from the public SixBack protocol work and includes SixBack
 data assets. See `SIXBACK_LICENSE`; noncommercial terms apply to those parts.
 

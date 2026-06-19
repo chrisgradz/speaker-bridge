@@ -27,6 +27,47 @@ def bmx_services_availability() -> bytes:
     return b'{"services":[]}'
 
 
+def sourceproviders_xml() -> bytes:
+    timestamp = "2012-09-19T12:43:00.000+00:00"
+    providers = [
+        ("1", "PANDORA"),
+        ("2", "INTERNET_RADIO"),
+        ("3", "OFF"),
+        ("4", "LOCAL"),
+        ("5", "AIRPLAY"),
+        ("6", "CURRATED_RADIO"),
+        ("7", "STORED_MUSIC"),
+        ("8", "SLAVE_SOURCE"),
+        ("9", "AUX"),
+        ("10", "RECOMMENDED_INTERNET_RADIO"),
+        ("11", "LOCAL_INTERNET_RADIO"),
+        ("12", "GLOBAL_INTERNET_RADIO"),
+        ("13", "HELLO"),
+        ("14", "DEEZER"),
+        ("15", "SPOTIFY"),
+        ("16", "IHEART"),
+        ("17", "SIRIUSXM"),
+        ("18", "GOOGLE_PLAY_MUSIC"),
+        ("19", "QQMUSIC"),
+        ("20", "AMAZON"),
+        ("21", "LOCAL_MUSIC"),
+        ("22", "WBMX"),
+        ("23", "SOUNDCLOUD"),
+        ("24", "TIDAL"),
+        ("25", "TUNEIN"),
+        ("38", "SIRIUSXM_EVEREST"),
+        ("39", "RADIO_BROWSER"),
+    ]
+    body = ['<?xml version="1.0" standalone="yes"?><sourceProviders>']
+    for provider_id, name in providers:
+        body.append(
+            f'<sourceprovider id="{provider_id}"><createdOn>{timestamp}</createdOn>'
+            f"<name>{escape(name)}</name><updatedOn>{timestamp}</updatedOn></sourceprovider>"
+        )
+    body.append("</sourceProviders>")
+    return "".join(body).encode("utf-8")
+
+
 def account_full(store: Store, account_id: str) -> bytes:
     speakers = store.speakers_for_account(account_id)
     devices = "".join(_device_xml(store, speaker) for speaker in speakers)
@@ -99,6 +140,56 @@ def tunein_station(station_id: str, base_url: str) -> bytes:
         "url": resolved.get("url") or f"{base_url}/silence.mp3",
         "containerArt": resolved.get("image") or "",
         "_links": {"bmx_reporting": {"href": f"/v1/report?guide_id={station_id}"}},
+    }
+    return json.dumps(payload, separators=(",", ":")).encode("utf-8")
+
+
+def siriusxm_token() -> bytes:
+    return b'{"access_token":"sixback-siriusxm-preserved","token_type":"Bearer","expires_in":31536000}'
+
+
+def siriusxm_availability() -> bytes:
+    return b'{"available":true,"status":"AVAILABLE"}'
+
+
+def siriusxm_station(store: Store, station_id: str, base_url: str) -> bytes:
+    preset = store.find_preset_by_source_station("SIRIUSXM", station_id)
+    name = preset.get("name") if preset else station_id
+    image = preset.get("image_url") if preset else ""
+    # This is intentionally a placeholder stream URL. If the speaker accepts the
+    # adapter envelope but cannot play, the next step is adding authenticated
+    # SiriusXM stream resolution.
+    stream_url = f"{base_url}/siriusxm/needs-auth/{urllib.parse.quote(station_id)}"
+    payload = {
+        "name": name or station_id,
+        "streamType": "liveRadio",
+        "audio": {
+            "hasPlaylist": True,
+            "isRealtime": True,
+            "maxTimeout": 60,
+            "streamUrl": stream_url,
+            "streams": [
+                {
+                    "bufferingTimeout": 20,
+                    "connectingTimeout": 10,
+                    "hasPlaylist": True,
+                    "isRealtime": True,
+                    "streamUrl": stream_url,
+                }
+            ],
+        },
+        "imageUrl": image or "",
+        "_links": {
+            "bmx_reporting": {"href": f"/v1/report?guide_id={station_id}"},
+            "bmx_nowplaying": {
+                "href": f"/v1/now-playing/station/{station_id}",
+                "useInternalClient": "ALWAYS",
+            },
+        },
+        "_meta": {
+            "resolver": "sixback-ubuntu-siriusxm-preserved",
+            "requiresAuthStreamResolver": True,
+        },
     }
     return json.dumps(payload, separators=(",", ":")).encode("utf-8")
 

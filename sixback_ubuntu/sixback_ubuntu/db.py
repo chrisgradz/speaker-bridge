@@ -146,6 +146,24 @@ class Store:
         ).fetchall()
         return [_normalize_preset_row(dict(row)) for row in rows]
 
+    def find_preset_by_source_station(self, source: str, station_id: str) -> dict[str, Any] | None:
+        rows = self.conn.execute(
+            "SELECT * FROM presets WHERE source=? OR raw_content_item LIKE ? ORDER BY slot",
+            (source, f"%{source}%"),
+        ).fetchall()
+        normalized = [_normalize_preset_row(dict(row)) for row in rows]
+        for preset in normalized:
+            if preset.get("source") != source:
+                continue
+            stored_id = str(preset.get("station_id", ""))
+            if stored_id == station_id or stored_id.split("?", 1)[0] == station_id:
+                return preset
+            raw_location = _xml_attr(str(preset.get("raw_content_item", "")), "location")
+            raw_slug = raw_location.rstrip("/").split("/")[-1].split("?", 1)[0]
+            if raw_slug == station_id:
+                return preset
+        return None
+
     def _set_preset_locked(self, device_id: str, preset: dict[str, Any]) -> None:
         self.conn.execute(
             """

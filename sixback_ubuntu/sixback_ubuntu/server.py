@@ -19,6 +19,10 @@ from .cloud import (
     bmx_services,
     bmx_services_availability,
     device_presets,
+    siriusxm_availability,
+    siriusxm_station,
+    siriusxm_token,
+    sourceproviders_xml,
     sources_xml,
     tunein_station,
     tunein_token,
@@ -108,9 +112,15 @@ class SixBackServer(ThreadingHTTPServer):
         self.route("POST", r"/api/speakers/(?P<device_id>[^/]+)/presets/(?P<slot>[1-6])/copy", handle_copy_preset)
         self.route("GET", r"/bmx/registry/v1/services", handle_bmx_services)
         self.route("GET", r"/bmx/registry/v1/servicesAvailability", handle_bmx_services_availability)
+        self.route("GET", r"/streaming/sourceproviders", handle_sourceproviders)
         self.route("POST", r"/bmx/tunein/v1/token", handle_tunein_token)
         self.route("GET", r"/bmx/tunein/v1/playback/station/(?P<station_id>[^/]+)", handle_tunein_station)
         self.route("POST", r"/bmx/tunein/v1/report", handle_empty)
+        self.route("GET", r"/core02/svc-bmx-adapter-siriusxm-everest-eco1/prod/live-adapter/token", handle_siriusxm_token)
+        self.route("POST", r"/core02/svc-bmx-adapter-siriusxm-everest-eco1/prod/live-adapter/token", handle_siriusxm_token)
+        self.route("GET", r"/core02/svc-bmx-adapter-siriusxm-everest-eco1/prod/live-adapter/availability", handle_siriusxm_availability)
+        self.route("GET", r"/core02/svc-bmx-adapter-siriusxm-everest-eco1/prod/live-adapter/playback/station/(?P<station_id>[^/]+)", handle_siriusxm_station)
+        self.route("GET", r"/siriusxm/needs-auth/(?P<station_id>[^/]+)", handle_siriusxm_needs_auth)
         self.route("POST", r"/v1/scmudc/(?P<device_id>[^/]+)", handle_empty)
         self.route("GET", r"/streaming/account/(?P<account_id>[^/]+)/full", handle_account_full)
         self.route("GET", r"/streaming/account/(?P<account_id>[^/]+)/sources", handle_sources)
@@ -127,9 +137,11 @@ class SixBackServer(ThreadingHTTPServer):
 
 
 def handle_root(req: SixBackHandler) -> None:
-    req.send_response(302)
-    req.send_header("Location", "/admin")
-    req.end_headers()
+    req.send_text(
+        '<!doctype html><html><head><meta charset="utf-8"><title>SixBack Ubuntu</title></head>'
+        '<body><h1>SixBack Ubuntu</h1><p>Admin UI: <a href="/admin">/admin</a></p></body></html>',
+        content_type="text/html; charset=utf-8",
+    )
 
 
 def handle_admin(req: SixBackHandler) -> None:
@@ -278,12 +290,42 @@ def handle_bmx_services_availability(req: SixBackHandler) -> None:
     req.send_bytes(bmx_services_availability(), content_type="application/json")
 
 
+def handle_sourceproviders(req: SixBackHandler) -> None:
+    req.send_bytes(sourceproviders_xml(), content_type="application/vnd.bose.streaming-v1.2+xml")
+
+
 def handle_tunein_token(req: SixBackHandler) -> None:
     req.send_bytes(tunein_token(), content_type="application/json")
 
 
 def handle_tunein_station(req: SixBackHandler, station_id: str) -> None:
     req.send_bytes(tunein_station(station_id, req.server.public_base), content_type="application/json")
+
+
+def handle_siriusxm_token(req: SixBackHandler) -> None:
+    length = int(req.headers.get("Content-Length", "0") or "0")
+    if length:
+        req.rfile.read(length)
+    req.send_bytes(siriusxm_token(), content_type="application/json")
+
+
+def handle_siriusxm_availability(req: SixBackHandler) -> None:
+    req.send_bytes(siriusxm_availability(), content_type="application/json")
+
+
+def handle_siriusxm_station(req: SixBackHandler, station_id: str) -> None:
+    req.send_bytes(siriusxm_station(req.server.store, station_id, req.server.public_base), content_type="application/json")
+
+
+def handle_siriusxm_needs_auth(req: SixBackHandler, station_id: str) -> None:
+    req.send_json(
+        {
+            "error": "siriusxm_stream_auth_required",
+            "station_id": station_id,
+            "message": "The preserved SiriusXM preset reached the local adapter, but this MVP still needs authenticated SiriusXM stream URL resolution.",
+        },
+        501,
+    )
 
 
 def handle_account_full(req: SixBackHandler, account_id: str) -> None:
