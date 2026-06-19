@@ -71,6 +71,14 @@ If the speaker still fails to play after importing a HAR, the captured playlist
 URL may have expired or may require browser-only TLS/header behavior. Capture a
 fresh HAR while the web player is actively playing and import it again.
 
+Inspect recent speaker event payloads after a failed playback attempt:
+
+```bash
+curl http://localhost:8000/api/speakers/DEVICE_ID/events
+```
+
+The service also prints compact `[scmudc]` event summaries to `journalctl`.
+
 This MVP is derived from the public SixBack protocol work and includes SixBack
 data assets. See `SIXBACK_LICENSE`; noncommercial terms apply to those parts.
 

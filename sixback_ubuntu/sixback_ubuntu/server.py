@@ -107,6 +107,7 @@ class SixBackServer(ThreadingHTTPServer):
         self.route("POST", r"/api/speakers", handle_add_speaker)
         self.route("POST", r"/api/speakers/(?P<device_id>[^/]+)/import-presets", handle_import_presets)
         self.route("POST", r"/api/speakers/(?P<device_id>[^/]+)/migrate", handle_migrate)
+        self.route("GET", r"/api/speakers/(?P<device_id>[^/]+)/events", handle_speaker_events)
         self.route("GET", r"/api/speakers/(?P<device_id>[^/]+)/presets", handle_get_presets)
         self.route("PUT", r"/api/speakers/(?P<device_id>[^/]+)/presets/(?P<slot>[1-6])", handle_put_preset)
         self.route("DELETE", r"/api/speakers/(?P<device_id>[^/]+)/presets/(?P<slot>[1-6])", handle_delete_preset)
@@ -127,7 +128,7 @@ class SixBackServer(ThreadingHTTPServer):
         self.route("GET", r"/core02/svc-bmx-adapter-siriusxm-everest-eco1/prod/live-adapter/v1/now-playing/station/(?P<station_id>[^/]+)", handle_siriusxm_now_playing)
         self.route("POST", r"/core02/svc-bmx-adapter-siriusxm-everest-eco1/prod/live-adapter/v1/report", handle_empty)
         self.route("GET", r"/siriusxm/needs-auth/(?P<station_id>[^/]+)", handle_siriusxm_needs_auth)
-        self.route("POST", r"/v1/scmudc/(?P<device_id>[^/]+)", handle_empty)
+        self.route("POST", r"/v1/scmudc/(?P<device_id>[^/]+)", handle_scmudc)
         self.route("GET", r"/streaming/account/(?P<account_id>[^/]+)/full", handle_account_full)
         self.route("GET", r"/streaming/account/(?P<account_id>[^/]+)/sources", handle_sources)
         self.route("GET", r"/streaming/account/(?P<account_id>[^/]+)/presets", handle_account_presets)
@@ -181,6 +182,14 @@ def handle_import_presets(req: SixBackHandler, device_id: str) -> None:
     presets = import_presets(speaker["ip"])
     req.server.store.replace_presets(device_id, presets)
     req.send_json({"device_id": device_id, "imported": len(presets), "presets": presets})
+
+
+def handle_speaker_events(req: SixBackHandler, device_id: str) -> None:
+    speaker = req.server.store.get_speaker(device_id)
+    if not speaker:
+        req.send_json({"error": "unknown speaker"}, 404)
+        return
+    req.send_json({"device_id": device_id, "events": req.server.store.recent_scmudc_events(device_id)})
 
 
 def handle_get_presets(req: SixBackHandler, device_id: str) -> None:
@@ -369,6 +378,46 @@ def handle_siriusxm_needs_auth(req: SixBackHandler, station_id: str) -> None:
         },
         501,
     )
+
+
+def handle_scmudc(req: SixBackHandler, device_id: str) -> None:
+    length = int(req.headers.get("Content-Length", "0") or "0")
+    body = req.rfile.read(length).decode("utf-8", "replace") if length else ""
+    summary = summarize_scmudc(body)
+    if summary:
+        req.server.store.add_scmudc_event(device_id, summary, body)
+        print(f"[scmudc] {device_id} {summary}")
+    req.send_text("")
+
+
+def summarize_scmudc(body: str) -> str:
+    try:
+        data = json.loads(body) if body else {}
+    except json.JSONDecodeError:
+        return f"non-json body bytes={len(body)}"
+    payload = data.get("payload") if isinstance(data, dict) else {}
+    events = payload.get("events") if isinstance(payload, dict) else None
+    if not isinstance(events, list):
+        events = data.get("events") if isinstance(data, dict) else []
+    parts: list[str] = []
+    for event in events if isinstance(events, list) else []:
+        if not isinstance(event, dict):
+            continue
+        event_type = str(event.get("type") or event.get("eventType") or "event")
+        event_data = event.get("data") if isinstance(event.get("data"), dict) else event
+        source = event_data.get("source") or event_data.get("sourceName") or event_data.get("sourceType") or ""
+        state = event_data.get("state") or event_data.get("playStatus") or event_data.get("status") or ""
+        error = event_data.get("error") or event_data.get("errorCode") or event_data.get("reason") or ""
+        item = event_data.get("itemName") or event_data.get("name") or event_data.get("trackName") or ""
+        fields = [event_type]
+        for value in (source, state, error, item):
+            if value:
+                fields.append(str(value))
+        parts.append(":".join(fields))
+    if parts:
+        return " | ".join(parts[:8])
+    keys = sorted(data.keys()) if isinstance(data, dict) else []
+    return f"json keys={','.join(keys)} bytes={len(body)}"
 
 
 def handle_account_full(req: SixBackHandler, account_id: str) -> None:

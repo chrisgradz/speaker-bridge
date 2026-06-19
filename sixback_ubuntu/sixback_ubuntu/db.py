@@ -41,6 +41,14 @@ CREATE TABLE IF NOT EXISTS siriusxm_channels (
     stream_url TEXT NOT NULL DEFAULT '',
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+
+CREATE TABLE IF NOT EXISTS scmudc_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    device_id TEXT NOT NULL,
+    received_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    summary TEXT NOT NULL DEFAULT '',
+    body TEXT NOT NULL DEFAULT ''
+);
 """
 
 
@@ -204,6 +212,39 @@ class Store:
 
     def list_siriusxm_channels(self) -> list[dict[str, Any]]:
         rows = self.conn.execute("SELECT * FROM siriusxm_channels ORDER BY station_id").fetchall()
+        return [dict(row) for row in rows]
+
+    def add_scmudc_event(self, device_id: str, summary: str, body: str) -> None:
+        with self.conn:
+            self.conn.execute(
+                "INSERT INTO scmudc_events(device_id, summary, body) VALUES(?, ?, ?)",
+                (device_id, summary, body),
+            )
+            self.conn.execute(
+                """
+                DELETE FROM scmudc_events
+                WHERE id NOT IN (
+                    SELECT id FROM scmudc_events
+                    WHERE device_id=?
+                    ORDER BY id DESC
+                    LIMIT 50
+                )
+                AND device_id=?
+                """,
+                (device_id, device_id),
+            )
+
+    def recent_scmudc_events(self, device_id: str, limit: int = 20) -> list[dict[str, Any]]:
+        rows = self.conn.execute(
+            """
+            SELECT id, device_id, received_at, summary, body
+            FROM scmudc_events
+            WHERE device_id=?
+            ORDER BY id DESC
+            LIMIT ?
+            """,
+            (device_id, limit),
+        ).fetchall()
         return [dict(row) for row in rows]
 
     def _set_preset_locked(self, device_id: str, preset: dict[str, Any]) -> None:
