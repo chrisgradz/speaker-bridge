@@ -65,6 +65,7 @@ CREATE TABLE IF NOT EXISTS cloud_responses (
 CREATE TABLE IF NOT EXISTS station_aliases (
     source TEXT NOT NULL,
     old_station_id TEXT NOT NULL,
+    new_source TEXT NOT NULL DEFAULT '',
     new_station_id TEXT NOT NULL,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (source, old_station_id)
@@ -91,6 +92,13 @@ class Store:
                 self.conn.execute(
                     f"ALTER TABLE siriusxm_channels ADD COLUMN {name} TEXT NOT NULL DEFAULT ''"
                 )
+        alias_columns = {
+            row["name"]
+            for row in self.conn.execute("PRAGMA table_info(station_aliases)").fetchall()
+        }
+        if "new_source" not in alias_columns:
+            self.conn.execute("ALTER TABLE station_aliases ADD COLUMN new_source TEXT NOT NULL DEFAULT ''")
+            self.conn.execute("UPDATE station_aliases SET new_source=source WHERE new_source=''")
         self.conn.commit()
 
     def upsert_speaker(self, speaker: dict[str, Any]) -> None:
@@ -213,37 +221,53 @@ class Store:
                 return preset
         return None
 
-    def upsert_station_alias(self, source: str, old_station_id: str, new_station_id: str) -> None:
+    def upsert_station_alias(
+        self,
+        source: str,
+        old_station_id: str,
+        new_station_id: str,
+        new_source: str = "",
+    ) -> None:
         if not source or not old_station_id or not new_station_id or old_station_id == new_station_id:
             return
+        new_source = new_source or source
         self.conn.execute(
             """
-            INSERT INTO station_aliases(source, old_station_id, new_station_id)
-            VALUES(?, ?, ?)
+            INSERT INTO station_aliases(source, old_station_id, new_source, new_station_id)
+            VALUES(?, ?, ?, ?)
             ON CONFLICT(source, old_station_id) DO UPDATE SET
+                new_source=excluded.new_source,
                 new_station_id=excluded.new_station_id,
                 updated_at=CURRENT_TIMESTAMP
             """,
-            (source, old_station_id, new_station_id),
+            (source, old_station_id, new_source, new_station_id),
         )
         self.conn.commit()
 
     def resolve_station_alias(self, source: str, station_id: str) -> str:
+        return self.resolve_station_alias_target(source, station_id)["station_id"]
+
+    def resolve_station_alias_target(self, source: str, station_id: str) -> dict[str, str]:
         seen = {station_id}
+        current_source = source
         current = station_id
         for _ in range(5):
             row = self.conn.execute(
-                "SELECT new_station_id FROM station_aliases WHERE source=? AND old_station_id=?",
-                (source, current),
+                "SELECT new_source, new_station_id FROM station_aliases WHERE source=? AND old_station_id=?",
+                (current_source, current),
             ).fetchone()
             if not row:
-                return current
+                return {"source": current_source, "station_id": current}
+            next_source = str(row["new_source"] or current_source)
             next_id = str(row["new_station_id"])
-            if not next_id or next_id in seen:
-                return current
+            key = f"{next_source}:{next_id}"
+            if not next_id or key in seen:
+                return {"source": current_source, "station_id": current}
             seen.add(next_id)
+            seen.add(key)
+            current_source = next_source
             current = next_id
-        return current
+        return {"source": current_source, "station_id": current}
 
     def upsert_siriusxm_channel(self, station_id: str, data: dict[str, Any]) -> dict[str, Any]:
         self.conn.execute(

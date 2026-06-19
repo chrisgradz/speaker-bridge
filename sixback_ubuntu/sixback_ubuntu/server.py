@@ -29,6 +29,7 @@ from .cloud import (
     siriusxm_now_playing,
     siriusxm_station,
     siriusxm_token,
+    tunein_siriusxm_alias_station,
     sourceproviders_xml,
     sources_xml,
     tunein_station,
@@ -392,12 +393,15 @@ def xml_attr(text: str, name: str) -> str:
 
 
 def remember_siriusxm_station_alias(store: Store, old_preset: Json, new_preset: Json) -> None:
-    if old_preset.get("source") != "SIRIUSXM" or new_preset.get("source") != "SIRIUSXM":
+    old_source = str(old_preset.get("source", "")).upper()
+    new_source = str(new_preset.get("source", "")).upper()
+    if old_source not in {"SIRIUSXM", "TUNEIN"} or new_source != "SIRIUSXM":
         return
     store.upsert_station_alias(
-        "SIRIUSXM",
-        siriusxm_station_slug(old_preset),
-        siriusxm_station_slug(new_preset),
+        old_source,
+        preset_station_slug(old_preset),
+        preset_station_slug(new_preset),
+        new_source,
     )
 
 
@@ -412,7 +416,7 @@ def speaker_onboard_preset(speaker: Json, slot: int) -> Json | None:
     return None
 
 
-def siriusxm_station_slug(preset: Json) -> str:
+def preset_station_slug(preset: Json) -> str:
     raw = str(preset.get("raw_content_item", ""))
     location = xml_attr(raw, "location") or str(preset.get("station_id", ""))
     return location.rstrip("/").split("/")[-1].split("?", 1)[0].strip()
@@ -420,6 +424,10 @@ def siriusxm_station_slug(preset: Json) -> str:
 
 def resolve_siriusxm_station_alias(store: Store, station_id: str) -> str:
     return store.resolve_station_alias("SIRIUSXM", station_id.split("?", 1)[0])
+
+
+def resolve_station_alias_target(store: Store, source: str, station_id: str) -> Json:
+    return store.resolve_station_alias_target(source, station_id.split("?", 1)[0])
 
 
 def handle_migrate(req: SixBackHandler, device_id: str) -> None:
@@ -657,7 +665,17 @@ def handle_tunein_token(req: SixBackHandler) -> None:
 
 
 def handle_tunein_station(req: SixBackHandler, station_id: str) -> None:
-    req.send_bytes(tunein_station(station_id, req.server.public_base), content_type="application/json")
+    target = resolve_station_alias_target(req.server.store, "TUNEIN", station_id)
+    if target["source"] == "SIRIUSXM":
+        body = tunein_siriusxm_alias_station(
+            req.server.store,
+            station_id,
+            target["station_id"],
+            req.server.public_base,
+        )
+    else:
+        body = tunein_station(station_id, req.server.public_base)
+    req.send_bytes(body, content_type="application/json")
 
 
 def handle_siriusxm_token(req: SixBackHandler) -> None:

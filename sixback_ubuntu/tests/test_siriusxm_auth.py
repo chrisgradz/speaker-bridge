@@ -10,7 +10,11 @@ from http.cookiejar import Cookie
 from types import SimpleNamespace
 
 from sixback_ubuntu.sixback_ubuntu.db import Store
-from sixback_ubuntu.sixback_ubuntu.cloud import siriusxm_now_playing, siriusxm_station
+from sixback_ubuntu.sixback_ubuntu.cloud import (
+    siriusxm_now_playing,
+    siriusxm_station,
+    tunein_siriusxm_alias_station,
+)
 from sixback_ubuntu.sixback_ubuntu.siriusxm import (
     SiriusXmCredentials,
     SiriusXmSession,
@@ -874,6 +878,58 @@ class SiriusXmAuthTests(unittest.TestCase):
                 store.conn.close()
 
         self.assertEqual(resolved, "classicvinyl")
+
+    def test_tunein_preset_overwrite_creates_cross_source_siriusxm_alias(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Store(os.path.join(tmp, "state.sqlite3"))
+            try:
+                remember_siriusxm_station_alias(
+                    store,
+                    {
+                        "source": "TUNEIN",
+                        "station_id": "s17947",
+                        "raw_content_item": (
+                            '<ContentItem source="TUNEIN" type="stationurl" '
+                            'location="/v1/playback/station/s17947">'
+                            "<itemName>The Answer Chicago</itemName></ContentItem>"
+                        ),
+                    },
+                    {
+                        "source": "SIRIUSXM",
+                        "station_id": "big80s",
+                        "raw_content_item": (
+                            '<ContentItem source="SIRIUSXM_EVEREST" type="stationurl" '
+                            'location="/playback/station/big80s?preset_play=True">'
+                            "<itemName>80s on 8</itemName></ContentItem>"
+                        ),
+                    },
+                )
+
+                target = store.resolve_station_alias_target("TUNEIN", "s17947")
+            finally:
+                store.conn.close()
+
+        self.assertEqual(target, {"source": "SIRIUSXM", "station_id": "big80s"})
+
+    def test_tunein_siriusxm_alias_station_points_to_siriusxm_proxy(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Store(os.path.join(tmp, "state.sqlite3"))
+            try:
+                store.upsert_siriusxm_channel("big80s", {"name": "80s on 8"})
+                body = tunein_siriusxm_alias_station(
+                    store,
+                    "s17947",
+                    "big80s",
+                    "http://ubuntu.example:8000",
+                )
+            finally:
+                store.conn.close()
+
+        payload = json.loads(body)
+        self.assertEqual(payload["id"], "s17947")
+        self.assertEqual(payload["name"], "80s on 8")
+        self.assertEqual(payload["url"], "http://ubuntu.example:8000/siriusxm/proxy/big80s/playlist.m3u8")
+        self.assertEqual(payload["_meta"]["targetSource"], "SIRIUSXM")
 
     def test_admin_ui_exposes_siriusxm_channel_picker(self) -> None:
         self.assertIn("siriusChannelSearch", ADMIN_HTML)
