@@ -12,6 +12,7 @@ from typing import Any
 
 BOSE_BMX_PORT = 8090
 BOSE_TELNET_PORT = 17000
+BOSE_TS = "2012-09-19T12:43:00.000+00:00"
 
 
 def _http_get(url: str, timeout: float = 5.0) -> bytes:
@@ -186,7 +187,19 @@ def _looks_like_error(reply: str) -> bool:
 def preset_to_xml(preset: dict[str, Any]) -> str:
     slot = int(preset["slot"])
     source = preset.get("source", "EMPTY")
-    if source in {"OPAQUE", "SIRIUSXM"} and preset.get("raw_content_item"):
+    if source == "SIRIUSXM" and preset.get("raw_content_item"):
+        raw = preset["raw_content_item"]
+        name = _tag(raw, "itemName") or preset.get("name", "")
+        location = _attr(raw, "location") or preset.get("stream_url", "")
+        source_account = _attr(raw, "sourceAccount")
+        return (
+            f'<preset buttonNumber="{slot}">'
+            "<containerArt></containerArt><contentItemType></contentItemType>"
+            f"<location>{escape(location)}</location><name>{escape(name)}</name>"
+            f"{raw}{_siriusxm_source_xml(source_account)}"
+            f"<username>{escape(name)}</username></preset>"
+        )
+    if source == "OPAQUE" and preset.get("raw_content_item"):
         raw = preset["raw_content_item"]
         name = _tag(raw, "itemName") or preset.get("name", "")
         location = _attr(raw, "location") or preset.get("stream_url", "")
@@ -219,4 +232,19 @@ def preset_to_xml(preset: dict[str, Any]) -> str:
         f"<sourcename>{escape(source_name)}</sourcename><sourceSettings/>"
         "<username></username></source>"
         f"<username>{name}</username></preset>"
+    )
+
+
+def _siriusxm_source_xml(source_account: str) -> str:
+    return (
+        '<source id="4" type="Audio">'
+        f"<createdOn>{BOSE_TS}</createdOn>"
+        '<credential type="token"></credential>'
+        "<name>SiriusXM</name>"
+        "<sourceproviderid>38</sourceproviderid>"
+        "<sourcename>SIRIUSXM_EVEREST</sourcename>"
+        "<sourceSettings/>"
+        f"<updatedOn>{BOSE_TS}</updatedOn>"
+        f"<username>{escape(source_account)}</username>"
+        "</source>"
     )
