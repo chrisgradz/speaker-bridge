@@ -461,7 +461,7 @@ def rewrite_hls_playlist(body: str, playlist_url: str, server: SixBackServer) ->
         if stripped.startswith("#EXT-X-KEY:"):
             rewritten.append(rewrite_hls_key_line(line, playlist_url, server))
         elif stripped and not stripped.startswith("#"):
-            rewritten.append(proxy_url(urljoin(playlist_url, stripped), server))
+            rewritten.append(proxy_url(urljoin(playlist_url, stripped), server, absolute=False))
         else:
             rewritten.append(line)
     return "\n".join(rewritten) + "\n"
@@ -511,15 +511,18 @@ def trim_hls_playlist(body: str, max_segments: int = 6) -> str:
 
 def rewrite_hls_key_line(line: str, playlist_url: str, server: SixBackServer) -> str:
     def repl(match: re.Match[str]) -> str:
-        return f'URI="{proxy_url(urljoin(playlist_url, match.group(1)), server)}"'
+        return f'URI="{proxy_url(urljoin(playlist_url, match.group(1)), server, absolute=False)}"'
 
     return re.sub(r'URI="([^"]+)"', repl, line)
 
 
-def proxy_url(target: str, server: SixBackServer) -> str:
+def proxy_url(target: str, server: SixBackServer, absolute: bool = True) -> str:
     token = hashlib.sha256(target.encode("utf-8")).hexdigest()[:24]
     server.siriusxm_proxy_urls[token] = target
-    return f"{server.public_base}/siriusxm/proxy/fetch/{token}"
+    path = f"/siriusxm/proxy/fetch/{token}"
+    if absolute:
+        return f"{server.public_base}{path}"
+    return path
 
 
 def summarize_hls_playlist(station_id: str, playlist: str) -> str:

@@ -48,7 +48,7 @@ class HlsProxyTests(unittest.TestCase):
         self.assertIn("keys=1", summary)
         self.assertIn("media=3", summary)
 
-    def test_rewrite_hls_playlist_uses_local_token_urls(self) -> None:
+    def test_rewrite_hls_playlist_uses_root_relative_token_urls(self) -> None:
         server = FakeServer()
         body = "\n".join(
             [
@@ -63,7 +63,8 @@ class HlsProxyTests(unittest.TestCase):
 
         self.assertNotIn("https://example.test/key", rewritten)
         self.assertNotIn("audio/segment.aac", rewritten)
-        self.assertEqual(rewritten.count("http://ubuntu.example:8000/siriusxm/proxy/fetch/"), 2)
+        self.assertNotIn("http://ubuntu.example:8000", rewritten)
+        self.assertEqual(rewritten.count("/siriusxm/proxy/fetch/"), 2)
         self.assertEqual(
             sorted(server.siriusxm_proxy_urls.values()),
             [
