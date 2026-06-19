@@ -212,7 +212,7 @@ def siriusxm_station(store: Store, station_id: str, base_url: str) -> bytes:
     return json.dumps(payload, separators=(",", ":")).encode("utf-8")
 
 
-def siriusxm_now_playing(store: Store, station_id: str) -> bytes:
+def siriusxm_now_playing(store: Store, station_id: str, metadata: dict[str, str] | None = None) -> bytes:
     preset = store.find_preset_by_source_station("SIRIUSXM", station_id)
     name = preset.get("name") if preset else station_id
     image = preset.get("image_url") if preset else ""
@@ -226,6 +226,10 @@ def siriusxm_now_playing(store: Store, station_id: str) -> bytes:
         "imageUrl": image or "",
         "containerArt": image or "",
     }
+    if metadata:
+        payload.update({key: value for key, value in metadata.items() if value})
+        if payload.get("imageUrl") and not payload.get("containerArt"):
+            payload["containerArt"] = payload["imageUrl"]
     return json.dumps(payload, separators=(",", ":")).encode("utf-8")
 
 

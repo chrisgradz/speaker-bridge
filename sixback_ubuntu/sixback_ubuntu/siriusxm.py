@@ -97,6 +97,86 @@ def extract_stream_url(payload: Any) -> str:
     return ""
 
 
+def extract_now_playing(payload: Any, station_id: str, station_name: str = "") -> dict[str, str]:
+    item = latest_track_item(payload)
+    track = str(item.get("name") or item.get("trackName") or station_name or station_id)
+    artist = str(item.get("artistName") or item.get("artist") or "")
+    album = str(item.get("albumName") or item.get("album") or "")
+    channel = str(
+        first_string(payload, "channelName")
+        or first_string(payload, "stationName")
+        or station_name
+        or station_id
+    )
+    image = extract_image_url(item) or extract_image_url(payload)
+    return {
+        "stationId": station_id,
+        "stationName": channel,
+        "channelName": channel,
+        "trackName": track,
+        "artistName": artist or "SiriusXM",
+        "albumName": album,
+        "imageUrl": image,
+        "containerArt": image,
+    }
+
+
+def latest_track_item(payload: Any) -> dict[str, Any]:
+    items = []
+    if isinstance(payload, dict) and isinstance(payload.get("items"), list):
+        items.extend(item for item in payload["items"] if isinstance(item, dict))
+    for value in walk_dicts(payload):
+        if isinstance(value, dict) and ("artistName" in value or "trackName" in value):
+            items.append(value)
+    for item in reversed(items):
+        if item.get("isInterstitial") is True:
+            continue
+        flags = item.get("cutFlags", [])
+        if isinstance(flags, list) and "INTERSTITIAL" in flags:
+            continue
+        if item.get("name") or item.get("trackName"):
+            return item
+    return {}
+
+
+def walk_dicts(value: Any) -> list[dict[str, Any]]:
+    found: list[dict[str, Any]] = []
+    if isinstance(value, dict):
+        found.append(value)
+        for child in value.values():
+            found.extend(walk_dicts(child))
+    elif isinstance(value, list):
+        for child in value:
+            found.extend(walk_dicts(child))
+    return found
+
+
+def first_string(payload: Any, key: str) -> str:
+    if isinstance(payload, dict):
+        value = payload.get(key)
+        if isinstance(value, str):
+            return value
+        for child in payload.values():
+            found = first_string(child, key)
+            if found:
+                return found
+    elif isinstance(payload, list):
+        for child in payload:
+            found = first_string(child, key)
+            if found:
+                return found
+    return ""
+
+
+def extract_image_url(payload: Any) -> str:
+    for value in walk_values(payload):
+        if isinstance(value, str) and value.startswith("https://"):
+            lowered = value.lower()
+            if any(fragment in lowered for fragment in (".jpg", ".jpeg", ".png", "image")):
+                return value
+    return ""
+
+
 def walk_values(value: Any) -> list[Any]:
     found: list[Any] = []
     if isinstance(value, dict):
@@ -122,6 +202,8 @@ class SiriusXmSession:
         self.last_login_at = ""
         self.last_error = ""
         self.channels: list[dict[str, Any]] = []
+        self.now_playing_cache: dict[str, tuple[float, dict[str, str]]] = {}
+        self.now_playing_ttl = 20.0
 
     @classmethod
     def from_env(cls, path: str = DEFAULT_ENV_FILE) -> "SiriusXmSession":
@@ -151,19 +233,7 @@ class SiriusXmSession:
         if not self.is_session_authenticated():
             self.login()
         channel_info = self.resolve_channel(station_id, channel or {})
-        data = self._get_k2(
-            "tune/now-playing-live",
-            {
-                "assetGUID": channel_info.get("guid") or channel_info.get("channelGuid") or station_id,
-                "ccRequestType": "AUDIO_VIDEO",
-                "channelId": channel_info.get("channel_id") or station_id,
-                "hls_output_mode": "custom",
-                "marker_mode": "all_separate_cue_points",
-                "result-template": "web",
-                "time": str(int(round(time.time() * 1000.0))),
-                "timestamp": dt.datetime.now(dt.UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
-            },
-        )
+        data = self._get_k2("tune/now-playing-live", self._live_params(channel_info, station_id))
         url = extract_stream_url(data)
         if not url:
             raise SiriusXmError("SiriusXM did not return an HLS playlist URL")
@@ -171,6 +241,32 @@ class SiriusXmSession:
             url = url.replace("%Live_Primary_HLS%", LIVE_PRIMARY_HLS)
         variant = self._resolve_playlist_variant(url)
         return self._with_stream_auth(variant) if variant else self._with_stream_auth(url)
+
+    def now_playing(self, station_id: str, channel: dict[str, Any] | None = None) -> dict[str, str]:
+        cached = self.now_playing_cache.get(station_id)
+        now = time.time()
+        if cached and now - cached[0] < self.now_playing_ttl:
+            return cached[1]
+        if not self.is_session_authenticated():
+            self.login()
+        channel_data = channel or {}
+        channel_info = self.resolve_channel(station_id, channel_data)
+        data = self._get_k2("tune/now-playing-live", self._live_params(channel_info, station_id))
+        metadata = extract_now_playing(data, station_id, str(channel_data.get("name", "")))
+        self.now_playing_cache[station_id] = (now, metadata)
+        return metadata
+
+    def _live_params(self, channel_info: dict[str, str], station_id: str) -> dict[str, str]:
+        return {
+            "assetGUID": channel_info.get("guid") or channel_info.get("channelGuid") or station_id,
+            "ccRequestType": "AUDIO_VIDEO",
+            "channelId": channel_info.get("channel_id") or station_id,
+            "hls_output_mode": "custom",
+            "marker_mode": "all_separate_cue_points",
+            "result-template": "web",
+            "time": str(int(round(time.time() * 1000.0))),
+            "timestamp": dt.datetime.now(dt.UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+        }
 
     def resolve_channel(self, station_id: str, channel: dict[str, Any]) -> dict[str, str]:
         entity_id = extract_entity_id(str(channel.get("entity_url", "")))

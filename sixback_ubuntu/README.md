@@ -105,6 +105,11 @@ stored `stream_url`. After a `sixback-ubuntu` restart, the next SiriusXM preset
 press performs a fresh login automatically, so a manual login curl is only a
 diagnostic check.
 
+When the speaker asks for SiriusXM now-playing data, the service uses the same
+authenticated session to fetch current song metadata and returns track, artist,
+album, and artwork fields when SiriusXM provides them. If metadata lookup fails,
+playback continues and the response falls back to the station name.
+
 The HAR importer remains in `tools/import_siriusxm_har.py` only as legacy
 diagnostic tooling. It is not part of the normal SiriusXM setup path.
 

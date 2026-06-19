@@ -9,11 +9,12 @@ from io import BytesIO
 from http.cookiejar import Cookie
 
 from sixback_ubuntu.sixback_ubuntu.db import Store
-from sixback_ubuntu.sixback_ubuntu.cloud import siriusxm_station
+from sixback_ubuntu.sixback_ubuntu.cloud import siriusxm_now_playing, siriusxm_station
 from sixback_ubuntu.sixback_ubuntu.siriusxm import (
     SiriusXmCredentials,
     SiriusXmSession,
     extract_entity_id,
+    extract_now_playing,
     extract_stream_url,
     load_credentials,
     redact_secret,
@@ -66,6 +67,63 @@ class SiriusXmAuthTests(unittest.TestCase):
             ),
             "65f04311-3581-256c-97b9-279838d6ff5e",
         )
+
+    def test_extract_now_playing_uses_latest_non_interstitial_item(self) -> None:
+        payload = {
+            "channelName": "1st Wave",
+            "items": [
+                {
+                    "name": "Station Liner",
+                    "artistName": "1st Wave",
+                    "isInterstitial": True,
+                    "timestamp": "2026-06-19T15:00:00Z",
+                },
+                {
+                    "name": "Just Like Heaven",
+                    "artistName": "The Cure",
+                    "albumName": "Kiss Me, Kiss Me, Kiss Me",
+                    "images": {"tile": {"aspect_1x1": "https://img.example/cure.jpg"}},
+                    "isInterstitial": False,
+                    "timestamp": "2026-06-19T15:01:00Z",
+                },
+            ],
+        }
+
+        metadata = extract_now_playing(payload, "firstwave", "1st Wave")
+
+        self.assertEqual(metadata["trackName"], "Just Like Heaven")
+        self.assertEqual(metadata["artistName"], "The Cure")
+        self.assertEqual(metadata["albumName"], "Kiss Me, Kiss Me, Kiss Me")
+        self.assertEqual(metadata["channelName"], "1st Wave")
+        self.assertEqual(metadata["imageUrl"], "https://img.example/cure.jpg")
+
+    def test_extract_now_playing_finds_nested_track_items(self) -> None:
+        payload = {
+            "ModuleListResponse": {
+                "moduleList": {
+                    "modules": [
+                        {
+                            "moduleResponse": {
+                                "liveChannelData": {
+                                    "items": [
+                                        {
+                                            "trackName": "Blue Monday",
+                                            "artistName": "New Order",
+                                            "cutFlags": ["SONG"],
+                                        }
+                                    ]
+                                }
+                            }
+                        }
+                    ]
+                }
+            }
+        }
+
+        metadata = extract_now_playing(payload, "firstwave", "1st Wave")
+
+        self.assertEqual(metadata["trackName"], "Blue Monday")
+        self.assertEqual(metadata["artistName"], "New Order")
 
     def test_refresh_decision_covers_missing_and_auth_errors(self) -> None:
         self.assertTrue(should_refresh_stream(""))
@@ -197,6 +255,40 @@ class SiriusXmAuthTests(unittest.TestCase):
         with self.assertRaisesRegex(Exception, "bad login"):
             session.login()
 
+    def test_session_now_playing_fetches_and_caches_metadata(self) -> None:
+        requests = []
+
+        def opener(request):
+            requests.append(request.full_url)
+            if "modify/authentication" in request.full_url or "resume" in request.full_url:
+                return b'{"ModuleListResponse":{"status":1}}'
+            if "tune/now-playing-live" in request.full_url:
+                return json.dumps(
+                    {
+                        "channelName": "1st Wave",
+                        "items": [
+                            {
+                                "name": "Just Like Heaven",
+                                "artistName": "The Cure",
+                                "isInterstitial": False,
+                            }
+                        ],
+                    }
+                ).encode("utf-8")
+            raise AssertionError(f"unexpected URL {request.full_url}")
+
+        session = SiriusXmSession(
+            SiriusXmCredentials("listener@example.com", "secret password"),
+            opener=opener,
+        )
+
+        first = session.now_playing("firstwave", {"name": "1st Wave"})
+        second = session.now_playing("firstwave", {"name": "1st Wave"})
+
+        self.assertEqual(first["trackName"], "Just Like Heaven")
+        self.assertEqual(second["artistName"], "The Cure")
+        self.assertEqual(sum("tune/now-playing-live" in url for url in requests), 1)
+
     def test_server_reuses_cached_authenticated_stream_url(self) -> None:
         class FakeSession:
             credentials = SiriusXmCredentials("listener@example.com", "secret password")
@@ -268,6 +360,30 @@ class SiriusXmAuthTests(unittest.TestCase):
 
         self.assertIn("http://ubuntu.example:8000/siriusxm/proxy/firstwave/playlist.m3u8", body)
         self.assertNotIn("/siriusxm/needs-auth/firstwave", body)
+
+    def test_siriusxm_now_playing_payload_uses_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Store(os.path.join(tmp, "state.sqlite3"))
+
+            body = siriusxm_now_playing(
+                store,
+                "firstwave",
+                {
+                    "stationName": "1st Wave",
+                    "channelName": "1st Wave",
+                    "trackName": "Just Like Heaven",
+                    "artistName": "The Cure",
+                    "albumName": "Kiss Me, Kiss Me, Kiss Me",
+                    "imageUrl": "https://img.example/cure.jpg",
+                },
+            ).decode("utf-8")
+            store.conn.close()
+
+        payload = json.loads(body)
+        self.assertEqual(payload["trackName"], "Just Like Heaven")
+        self.assertEqual(payload["artistName"], "The Cure")
+        self.assertEqual(payload["albumName"], "Kiss Me, Kiss Me, Kiss Me")
+        self.assertEqual(payload["containerArt"], "https://img.example/cure.jpg")
 
     def test_siriusxm_error_sanitizer_removes_secrets_and_queries(self) -> None:
         message = (

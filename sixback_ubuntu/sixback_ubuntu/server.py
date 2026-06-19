@@ -484,7 +484,15 @@ def handle_siriusxm_station(req: SixBackHandler, station_id: str) -> None:
 
 
 def handle_siriusxm_now_playing(req: SixBackHandler, station_id: str) -> None:
-    body = siriusxm_now_playing(req.server.store, station_id)
+    metadata = {}
+    channel = req.server.store.get_siriusxm_channel(station_id)
+    if req.server.siriusxm.credentials.configured:
+        try:
+            metadata = req.server.siriusxm.now_playing(station_id, channel)
+        except Exception as exc:
+            message = sanitize_siriusxm_error(str(exc), req.server.siriusxm.credentials)
+            capture_cloud_response(req, "siriusxm", f"now-playing metadata failed station={station_id}: {message}")
+    body = siriusxm_now_playing(req.server.store, station_id, metadata)
     capture_cloud_response(req, "siriusxm", body.decode("utf-8", "replace"))
     req.send_bytes(body, content_type="application/json")
 
