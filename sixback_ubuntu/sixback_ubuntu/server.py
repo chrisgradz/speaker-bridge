@@ -1489,7 +1489,7 @@ ADMIN_HTML = """<!doctype html>
     </section>
   </main>
   <script>
-    const state = { speakers: [], selected: null, presets: [], sirius: null, siriusChannels: [] };
+    const state = { speakers: [], selected: null, presets: [], sirius: null, siriusChannels: [], cardNotices: {} };
     const $ = (id) => document.getElementById(id);
 
     async function api(path, options = {}) {
@@ -1508,6 +1508,29 @@ ADMIN_HTML = """<!doctype html>
       const el = $('status');
       el.textContent = text;
       el.className = `status ${kind}`.trim();
+    }
+
+    function cardNoticeKey(deviceId, slot) {
+      return `${deviceId}:${slot}`;
+    }
+
+    function setCardNotice(deviceId, slot, text, kind = '') {
+      state.cardNotices[cardNoticeKey(deviceId, slot)] = { text, kind };
+    }
+
+    function clearCardNotice(deviceId, slot) {
+      delete state.cardNotices[cardNoticeKey(deviceId, slot)];
+    }
+
+    function applyCardNotice(card) {
+      const speaker = currentSpeaker();
+      if (!speaker) return false;
+      const notice = state.cardNotices[cardNoticeKey(speaker.device_id, Number(card.dataset.slot))];
+      if (!notice) return false;
+      const status = card.querySelector('[data-role="card-status"]');
+      status.textContent = notice.text;
+      status.className = `status ${notice.kind}`.trim();
+      return true;
     }
 
     async function loadSpeakers() {
@@ -1632,7 +1655,12 @@ ADMIN_HTML = """<!doctype html>
         populateCopyOptions(card);
         populateSiriusPicker(card);
         syncSourceFields(card);
-        card.querySelector('[data-field="source"]').onchange = () => syncSourceFields(card);
+        applyCardNotice(card);
+        card.querySelector('[data-field="source"]').onchange = () => {
+          const speaker = currentSpeaker();
+          if (speaker) clearCardNotice(speaker.device_id, Number(card.dataset.slot));
+          syncSourceFields(card);
+        };
         card.querySelector('[data-action="save"]').onclick = () => savePreset(card);
         card.querySelector('[data-action="pick-sirius"]').onclick = () => pickSiriusChannel(card);
         card.querySelector('[data-action="refresh-sirius"]').onclick = () => refreshSiriusPreset(card);
@@ -1650,6 +1678,7 @@ ADMIN_HTML = """<!doctype html>
       card.querySelector('[data-action="pick-sirius"]').style.display = source === 'SIRIUSXM' ? 'inline-flex' : 'none';
       card.querySelector('[data-action="refresh-sirius"]').style.display = source === 'SIRIUSXM' ? 'inline-flex' : 'none';
       const msg = card.querySelector('[data-role="card-status"]');
+      if (applyCardNotice(card)) return;
       if (source === 'SIRIUSXM' && raw.includes('SIRIUSXM_EVEREST')) {
         msg.textContent = 'Imported SiriusXM preset preserved from the speaker. You can copy it to another slot.';
         msg.className = 'status ok';
@@ -1766,20 +1795,22 @@ ADMIN_HTML = """<!doctype html>
       const payload = Object.fromEntries([...card.querySelectorAll('[data-field]')].map((el) => [el.dataset.field, el.value.trim()]));
       const status = card.querySelector('[data-role="card-status"]');
       try {
+        status.textContent = 'Saving...';
+        status.className = 'status';
         const result = await api(`/api/speakers/${encodeURIComponent(speaker.device_id)}/presets/${slot}`, {
           method: 'PUT',
           body: JSON.stringify(payload),
         });
+        let text = 'Saved';
+        let kind = 'ok';
         if (result.speaker_store && result.speaker_store.attempted && result.speaker_store.ok === false) {
-          status.textContent = `Saved; speaker store failed: ${result.speaker_store.message || 'unknown error'}`;
-          status.className = 'status warn';
+          text = `Saved; speaker store failed: ${result.speaker_store.message || 'unknown error'}`;
+          kind = 'warn';
         } else if (result.speaker_store && result.speaker_store.ok) {
-          status.textContent = 'Saved and stored on speaker';
-          status.className = 'status ok';
-        } else {
-          status.textContent = 'Saved';
-          status.className = 'status ok';
+          text = 'Saved and stored on speaker';
         }
+        setCardNotice(speaker.device_id, slot, text, kind);
+        setStatus(`Slot ${slot}: ${text}`, kind);
         await loadPresets();
       } catch (err) {
         status.textContent = err.message;
