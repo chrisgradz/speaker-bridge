@@ -170,7 +170,12 @@ def siriusxm_availability() -> bytes:
     return b'{"available":true,"status":"AVAILABLE"}'
 
 
-def siriusxm_station(store: Store, station_id: str, base_url: str) -> bytes:
+def siriusxm_station(
+    store: Store,
+    station_id: str,
+    base_url: str,
+    metadata: dict[str, str] | None = None,
+) -> bytes:
     preset = store.find_preset_by_source_station("SIRIUSXM", station_id)
     channel = store.get_siriusxm_channel(station_id)
     name = channel.get("name") or (preset.get("name") if preset else station_id)
@@ -209,6 +214,26 @@ def siriusxm_station(store: Store, station_id: str, base_url: str) -> bytes:
             "requiresAuthStreamResolver": needs_auth,
         },
     }
+    if metadata:
+        now_playing = json.loads(siriusxm_now_playing(store, station_id, metadata).decode("utf-8"))
+        payload["nowPlaying"] = {
+            "source": "SIRIUSXM_EVEREST",
+            "playStatus": "PLAY_STATE",
+            "stationName": {"text": str(now_playing.get("stationName") or name or station_id)},
+            "track": now_playing.get("track") or {"text": ""},
+            "artist": now_playing.get("artist") or {"text": ""},
+            "album": now_playing.get("album") or {"text": ""},
+            "art": now_playing.get("art") or {"artImageStatus": "SHOW_DEFAULT_IMAGE", "text": ""},
+            "streamTypeField": {"text": "RADIO_STREAMING"},
+            "contentItem": {
+                "source": "SIRIUSXM_EVEREST",
+                "type": "stationurl",
+                "isPresetable": "true",
+                "location": f"/playback/station/{station_id}",
+                "itemName": {"text": name or station_id},
+                "containerArt": str(now_playing.get("containerArt") or now_playing.get("imageUrl") or image or ""),
+            },
+        }
     return json.dumps(payload, separators=(",", ":")).encode("utf-8")
 
 

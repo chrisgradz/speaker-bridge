@@ -646,6 +646,35 @@ class SiriusXmAuthTests(unittest.TestCase):
         self.assertEqual(payload["audio"]["streams"][0]["bufferingTimeout"], 120)
         self.assertEqual(payload["audio"]["streams"][0]["connectingTimeout"], 20)
 
+    def test_siriusxm_station_can_include_now_playing_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Store(os.path.join(tmp, "state.sqlite3"))
+            try:
+                store.upsert_siriusxm_channel("firstwave", {"name": "1st Wave"})
+
+                payload = json.loads(
+                    siriusxm_station(
+                        store,
+                        "firstwave",
+                        "http://ubuntu.example:8000",
+                        {
+                            "stationName": "1st Wave",
+                            "trackName": "Just Like Heaven",
+                            "artistName": "The Cure",
+                            "albumName": "Kiss Me, Kiss Me, Kiss Me",
+                            "imageUrl": "https://img.example/cure.jpg",
+                        },
+                    )
+                )
+            finally:
+                store.conn.close()
+
+        self.assertEqual(payload["nowPlaying"]["track"]["text"], "Just Like Heaven")
+        self.assertEqual(payload["nowPlaying"]["artist"]["text"], "The Cure")
+        self.assertEqual(payload["nowPlaying"]["album"]["text"], "Kiss Me, Kiss Me, Kiss Me")
+        self.assertEqual(payload["nowPlaying"]["stationName"]["text"], "1st Wave")
+        self.assertEqual(payload["nowPlaying"]["art"]["text"], "https://img.example/cure.jpg")
+
     def test_siriusxm_now_playing_payload_uses_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             store = Store(os.path.join(tmp, "state.sqlite3"))
