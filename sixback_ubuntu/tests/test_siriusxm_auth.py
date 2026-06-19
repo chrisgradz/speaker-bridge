@@ -1162,6 +1162,24 @@ class SiriusXmAuthTests(unittest.TestCase):
 
         self.assertEqual(target, {"source": "SIRIUSXM", "station_id": "big80s"})
 
+    def test_saving_real_tunein_preset_clears_stale_cross_source_alias(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Store(os.path.join(tmp, "state.sqlite3"))
+            try:
+                store.upsert_station_alias("TUNEIN", "s17947", "big80s", "SIRIUSXM")
+
+                remember_siriusxm_station_alias(
+                    store,
+                    {"source": "TUNEIN", "station_id": "s297678"},
+                    {"source": "TUNEIN", "station_id": "s17947"},
+                )
+
+                target = store.resolve_station_alias_target("TUNEIN", "s17947")
+            finally:
+                store.conn.close()
+
+        self.assertEqual(target, {"source": "TUNEIN", "station_id": "s17947"})
+
     def test_tunein_siriusxm_alias_station_points_to_siriusxm_proxy(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             store = Store(os.path.join(tmp, "state.sqlite3"))

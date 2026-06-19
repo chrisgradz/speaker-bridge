@@ -244,6 +244,13 @@ class Store:
         )
         self.conn.commit()
 
+    def clear_station_alias(self, source: str, station_id: str) -> None:
+        self.conn.execute(
+            "DELETE FROM station_aliases WHERE source=? AND old_station_id=?",
+            (source, station_id),
+        )
+        self.conn.commit()
+
     def resolve_station_alias(self, source: str, station_id: str) -> str:
         return self.resolve_station_alias_target(source, station_id)["station_id"]
 

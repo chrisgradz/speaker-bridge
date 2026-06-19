@@ -484,6 +484,9 @@ def xml_attr(text: str, name: str) -> str:
 def remember_siriusxm_station_alias(store: Store, old_preset: Json, new_preset: Json) -> None:
     old_source = str(old_preset.get("source", "")).upper()
     new_source = str(new_preset.get("source", "")).upper()
+    if new_source == "TUNEIN":
+        store.clear_station_alias("TUNEIN", preset_station_slug(new_preset))
+        return
     if old_source not in {"SIRIUSXM", "TUNEIN"} or new_source != "SIRIUSXM":
         return
     store.upsert_station_alias(
