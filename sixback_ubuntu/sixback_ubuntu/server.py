@@ -429,9 +429,9 @@ def handle_siriusxm_proxy_fetch(req: SixBackHandler, token: str = "") -> None:
         req.send_json({"error": "invalid_proxy_url"}, 400)
         return
     if is_siriusxm_hls_key(target):
-        capture_cloud_response(
+        maybe_capture_siriusxm_fetch_success(
             req,
-            "siriusxm",
+            target,
             f"served local hls key path={urlparse(target).path} bytes={len(SIRIUSXM_HLS_AES_KEY)}",
         )
         req.send_bytes(SIRIUSXM_HLS_AES_KEY, content_type="application/octet-stream")
@@ -448,7 +448,9 @@ def handle_siriusxm_proxy_fetch(req: SixBackHandler, token: str = "") -> None:
         content_type = "audio/aac"
     elif "key/" in target:
         content_type = "application/octet-stream"
-    capture_cloud_response(req, "siriusxm", f"proxied fetch path={urlparse(target).path} bytes={len(body)}")
+    maybe_capture_siriusxm_fetch_success(
+        req, target, f"proxied fetch path={urlparse(target).path} bytes={len(body)}"
+    )
     req.send_bytes(body, content_type=content_type)
 
 
@@ -470,6 +472,19 @@ def is_siriusxm_hls_key(url: str) -> bool:
     return parsed.netloc == "api.edge-gateway.siriusxm.com" and parsed.path.startswith(
         "/playback/key/"
     )
+
+
+def should_capture_siriusxm_fetch_success(target: str) -> bool:
+    parsed = urlparse(target)
+    path = parsed.path.lower()
+    if is_siriusxm_hls_key(target):
+        return False
+    return not path.endswith(".aac")
+
+
+def maybe_capture_siriusxm_fetch_success(req: SixBackHandler, target: str, body: str) -> None:
+    if should_capture_siriusxm_fetch_success(target):
+        capture_cloud_response(req, "siriusxm", body)
 
 
 def rewrite_hls_playlist(body: str, playlist_url: str, server: SixBackServer) -> str:
