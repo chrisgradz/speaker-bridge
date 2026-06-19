@@ -152,6 +152,7 @@ class SixBackServer(ThreadingHTTPServer):
         self.route("GET", r"/streaming/sourceproviders", handle_sourceproviders)
         self.route("POST", r"/bmx/tunein/v1/token", handle_tunein_token)
         self.route("GET", r"/bmx/tunein/v1/playback/station/(?P<station_id>[^/]+)", handle_tunein_station)
+        self.route("GET", r"/v1/playback/station/(?P<station_id>[^/]+)", handle_tunein_station)
         self.route("POST", r"/bmx/tunein/v1/report", handle_report)
         self.route("GET", r"/core02/svc-bmx-adapter-siriusxm-everest-eco1/prod/live-adapter/token", handle_siriusxm_token)
         self.route("POST", r"/core02/svc-bmx-adapter-siriusxm-everest-eco1/prod/live-adapter/token", handle_siriusxm_token)

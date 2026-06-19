@@ -163,24 +163,17 @@ def tunein_station(station_id: str, base_url: str) -> bytes:
 
 
 def tunein_siriusxm_alias_station(store: Store, old_station_id: str, station_id: str, base_url: str) -> bytes:
-    preset = store.find_preset_by_source_station("SIRIUSXM", station_id)
-    channel = store.get_siriusxm_channel(station_id)
-    name = channel.get("name") or (preset.get("name") if preset else station_id)
-    image = preset.get("image_url") if preset else ""
-    payload = {
-        "id": old_station_id,
-        "name": name or station_id,
-        "type": "stationurl",
-        "url": f"{base_url}/siriusxm/proxy/{urllib.parse.quote(station_id)}/playlist.m3u8",
-        "containerArt": image or "",
-        "_links": {"bmx_reporting": {"href": f"/v1/report?guide_id={old_station_id}"}},
-        "_meta": {
+    payload = json.loads(siriusxm_station(store, station_id, base_url).decode("utf-8"))
+    payload["id"] = old_station_id
+    payload.setdefault("_meta", {})
+    payload["_meta"].update(
+        {
             "resolver": "sixback-ubuntu-cross-source-alias",
             "source": "TUNEIN",
             "targetSource": "SIRIUSXM",
             "targetStationId": station_id,
-        },
-    }
+        }
+    )
     return json.dumps(payload, separators=(",", ":")).encode("utf-8")
 
 

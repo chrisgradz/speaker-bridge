@@ -928,7 +928,9 @@ class SiriusXmAuthTests(unittest.TestCase):
         payload = json.loads(body)
         self.assertEqual(payload["id"], "s17947")
         self.assertEqual(payload["name"], "80s on 8")
-        self.assertEqual(payload["url"], "http://ubuntu.example:8000/siriusxm/proxy/big80s/playlist.m3u8")
+        self.assertNotIn("url", payload)
+        self.assertEqual(payload["audio"]["streamUrl"], "http://ubuntu.example:8000/siriusxm/proxy/big80s/playlist.m3u8")
+        self.assertEqual(payload["_links"]["bmx_nowplaying"]["href"], "/v1/now-playing/station/big80s")
         self.assertEqual(payload["_meta"]["targetSource"], "SIRIUSXM")
 
     def test_admin_ui_exposes_siriusxm_channel_picker(self) -> None:
