@@ -1025,6 +1025,8 @@ class SiriusXmAuthTests(unittest.TestCase):
         self.assertIn("cardNotices", ADMIN_HTML)
         self.assertIn("setCardNotice(speaker.device_id, slot, text, kind)", ADMIN_HTML)
         self.assertIn("Saved and stored on speaker", ADMIN_HTML)
+        self.assertIn("SiriusXM preset stored.", ADMIN_HTML)
+        self.assertNotIn("Imported SiriusXM preset preserved from the speaker", ADMIN_HTML)
 
     def test_siriusxm_station_uses_longer_buffer_window(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -1680,7 +1680,7 @@ ADMIN_HTML = """<!doctype html>
       const msg = card.querySelector('[data-role="card-status"]');
       if (applyCardNotice(card)) return;
       if (source === 'SIRIUSXM' && raw.includes('SIRIUSXM_EVEREST')) {
-        msg.textContent = 'Imported SiriusXM preset preserved from the speaker. You can copy it to another slot.';
+        msg.textContent = 'SiriusXM preset stored.';
         msg.className = 'status ok';
       } else if (source === 'SIRIUSXM') {
         msg.textContent = state.siriusChannels.length
