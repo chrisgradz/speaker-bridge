@@ -603,10 +603,31 @@ def rewrite_hls_playlist(body: str, playlist_url: str, server: SixBackServer) ->
         if stripped.startswith("#EXT-X-KEY:"):
             rewritten.append(rewrite_hls_key_line(line, playlist_url, server))
         elif stripped and not stripped.startswith("#"):
-            rewritten.append(proxy_url(urljoin(playlist_url, stripped), server, absolute=False))
+            target = inherit_playlist_auth_query(urljoin(playlist_url, stripped), playlist_url)
+            rewritten.append(proxy_url(target, server, absolute=False))
         else:
             rewritten.append(line)
     return "\n".join(rewritten) + "\n"
+
+
+def inherit_playlist_auth_query(target: str, playlist_url: str) -> str:
+    target_parts = urlparse(target)
+    playlist_parts = urlparse(playlist_url)
+    if target_parts.query or not playlist_parts.query:
+        return target
+    if target_parts.netloc != playlist_parts.netloc:
+        return target
+    query = urllib.parse.parse_qs(playlist_parts.query)
+    auth_query = {
+        name: values[-1]
+        for name, values in query.items()
+        if name in {"token", "gupId", "consumer"} and values
+    }
+    if not auth_query:
+        return target
+    return urllib.parse.urlunparse(
+        target_parts._replace(query=urllib.parse.urlencode(auth_query))
+    )
 
 
 def trim_hls_playlist(body: str, max_segments: int = 6) -> str:

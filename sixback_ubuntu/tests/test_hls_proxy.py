@@ -80,6 +80,32 @@ class HlsProxyTests(unittest.TestCase):
             ],
         )
 
+    def test_rewrite_hls_playlist_carries_playlist_auth_query_to_relative_media(self) -> None:
+        server = FakeServer()
+        body = "\n".join(
+            [
+                "#EXTM3U",
+                "#EXTINF:9.75,",
+                "audio/segment.aac",
+                "#EXTINF:9.75,",
+                "audio/already.aac?token=own",
+            ]
+        )
+
+        rewrite_hls_playlist(
+            body,
+            "https://siriusxm-priprodlive.akamaized.net/firstwave/live.m3u8?token=abc&gupId=gup-123&consumer=k2",
+            server,
+        )
+
+        self.assertEqual(
+            sorted(server.siriusxm_proxy_urls.values()),
+            [
+                "https://siriusxm-priprodlive.akamaized.net/firstwave/audio/already.aac?token=own",
+                "https://siriusxm-priprodlive.akamaized.net/firstwave/audio/segment.aac?token=abc&gupId=gup-123&consumer=k2",
+            ],
+        )
+
     def test_siriusxm_key_detection(self) -> None:
         self.assertEqual(len(SIRIUSXM_HLS_AES_KEY), 16)
         self.assertTrue(

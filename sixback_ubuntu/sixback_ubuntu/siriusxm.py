@@ -170,7 +170,7 @@ class SiriusXmSession:
         if "%Live_Primary_HLS%" in url:
             url = url.replace("%Live_Primary_HLS%", LIVE_PRIMARY_HLS)
         variant = self._resolve_playlist_variant(url)
-        return variant or self._with_stream_auth(url)
+        return self._with_stream_auth(variant) if variant else self._with_stream_auth(url)
 
     def resolve_channel(self, station_id: str, channel: dict[str, Any]) -> dict[str, str]:
         entity_id = extract_entity_id(str(channel.get("entity_url", "")))
@@ -226,14 +226,19 @@ class SiriusXmSession:
         return ""
 
     def _with_stream_auth(self, url: str) -> str:
+        parsed = urllib.parse.urlparse(url)
+        existing = {name for name, _value in urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)}
         params = {}
         token = self._sxmak_token()
         gup_id = self._gup_id()
-        if token:
+        if token and "token" not in existing:
             params["token"] = token
-        if gup_id:
+        if gup_id and "gupId" not in existing:
             params["gupId"] = gup_id
-        params["consumer"] = "k2"
+        if "consumer" not in existing:
+            params["consumer"] = "k2"
+        if not params:
+            return url
         separator = "&" if urllib.parse.urlparse(url).query else "?"
         return f"{url}{separator}{urllib.parse.urlencode(params)}"
 

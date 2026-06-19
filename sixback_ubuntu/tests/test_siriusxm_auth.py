@@ -6,6 +6,7 @@ import unittest
 import urllib.error
 import json
 from io import BytesIO
+from http.cookiejar import Cookie
 
 from sixback_ubuntu.sixback_ubuntu.db import Store
 from sixback_ubuntu.sixback_ubuntu.cloud import siriusxm_station
@@ -175,10 +176,15 @@ class SiriusXmAuthTests(unittest.TestCase):
             SiriusXmCredentials("listener@example.com", "secret password"),
             opener=opener,
         )
+        session.cookie_jar.set_cookie(make_cookie("SXMAKTOKEN", "token=abc,expires=tomorrow"))
+        session.cookie_jar.set_cookie(make_cookie("SXMDATA", "%7B%22gupId%22%3A%22gup-123%22%7D"))
 
         stream_url = session.refresh_stream_url("firstwave", {})
 
-        self.assertEqual(stream_url, "https://siriusxm-priprodlive.akamaized.net/firstwave/firstwave_256k.m3u8")
+        self.assertEqual(
+            stream_url,
+            "https://siriusxm-priprodlive.akamaized.net/firstwave/firstwave_256k.m3u8?token=abc&gupId=gup-123&consumer=k2",
+        )
         self.assertTrue(any("modify/authentication" in req.full_url for req in requests))
         self.assertTrue(any("tune/now-playing-live" in req.full_url for req in requests))
 
@@ -251,6 +257,28 @@ class SiriusXmAuthTests(unittest.TestCase):
         self.assertNotIn("listener@example.com", redacted)
         self.assertNotIn("secret password", redacted)
         self.assertIn("[redacted-url]", redacted)
+
+
+def make_cookie(name: str, value: str) -> Cookie:
+    return Cookie(
+        version=0,
+        name=name,
+        value=value,
+        port=None,
+        port_specified=False,
+        domain="player.siriusxm.com",
+        domain_specified=True,
+        domain_initial_dot=False,
+        path="/",
+        path_specified=True,
+        secure=True,
+        expires=None,
+        discard=True,
+        comment=None,
+        comment_url=None,
+        rest={},
+        rfc2109=False,
+    )
 
 
 if __name__ == "__main__":
