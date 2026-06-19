@@ -97,22 +97,38 @@ class Store:
         with self.conn:
             self.conn.execute("DELETE FROM presets WHERE device_id=?", (device_id,))
             for preset in presets:
-                self.conn.execute(
-                    """
-                    INSERT INTO presets(device_id, slot, source, name, station_id, stream_url, image_url, raw_content_item)
-                    VALUES(?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        device_id,
-                        int(preset.get("slot", 0)),
-                        preset.get("source", "EMPTY"),
-                        preset.get("name", ""),
-                        preset.get("station_id", ""),
-                        preset.get("stream_url", ""),
-                        preset.get("image_url", ""),
-                        preset.get("raw_content_item", ""),
-                    ),
-                )
+                self._set_preset_locked(device_id, preset)
+
+    def set_preset(self, device_id: str, preset: dict[str, Any]) -> dict[str, Any]:
+        with self.conn:
+            self._set_preset_locked(device_id, preset)
+        return self.get_preset(device_id, int(preset["slot"]))
+
+    def clear_preset(self, device_id: str, slot: int) -> None:
+        self.conn.execute("DELETE FROM presets WHERE device_id=? AND slot=?", (device_id, slot))
+        self.conn.commit()
+
+    def get_preset(self, device_id: str, slot: int) -> dict[str, Any]:
+        row = self.conn.execute(
+            "SELECT * FROM presets WHERE device_id=? AND slot=?",
+            (device_id, slot),
+        ).fetchone()
+        if row:
+            return dict(row)
+        return {
+            "device_id": device_id,
+            "slot": slot,
+            "source": "EMPTY",
+            "name": "",
+            "station_id": "",
+            "stream_url": "",
+            "image_url": "",
+            "raw_content_item": "",
+        }
+
+    def preset_slots_for_speaker(self, device_id: str) -> list[dict[str, Any]]:
+        found = {int(p["slot"]): p for p in self.presets_for_speaker(device_id)}
+        return [found.get(slot) or self.get_preset(device_id, slot) for slot in range(1, 7)]
 
     def presets_for_speaker(self, device_id: str) -> list[dict[str, Any]]:
         rows = self.conn.execute(
@@ -120,3 +136,28 @@ class Store:
             (device_id,),
         ).fetchall()
         return [dict(row) for row in rows]
+
+    def _set_preset_locked(self, device_id: str, preset: dict[str, Any]) -> None:
+        self.conn.execute(
+            """
+            INSERT INTO presets(device_id, slot, source, name, station_id, stream_url, image_url, raw_content_item)
+            VALUES(?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(device_id, slot) DO UPDATE SET
+                source=excluded.source,
+                name=excluded.name,
+                station_id=excluded.station_id,
+                stream_url=excluded.stream_url,
+                image_url=excluded.image_url,
+                raw_content_item=excluded.raw_content_item
+            """,
+            (
+                device_id,
+                int(preset.get("slot", 0)),
+                preset.get("source", "EMPTY"),
+                preset.get("name", ""),
+                preset.get("station_id", ""),
+                preset.get("stream_url", ""),
+                preset.get("image_url", ""),
+                preset.get("raw_content_item", ""),
+            ),
+        )

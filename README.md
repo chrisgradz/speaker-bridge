@@ -8,13 +8,15 @@ core SixBack idea from ESP32 firmware into a normal Linux service:
 
 - register a SoundTouch speaker by IP,
 - import its existing six presets from `:8090/presets`,
+- edit TuneIn and direct-stream preset slots from a browser,
 - migrate the speaker over the Bose diagnostic telnet port `17000`,
 - serve the local Bose cloud replacement on port `8000`,
 - resolve TuneIn preset playback requests,
 - persist speaker and preset state in SQLite.
 
 This is an MVP, not full SixBack feature parity. Spotify, DLNA browsing, SSDP
-auto-discovery, OTA flows, and the polished ESP32 web UI are not included yet.
+auto-discovery, OTA flows, and authenticated SiriusXM preset creation are not
+included yet.
 
 ## Quick Start
 
@@ -30,6 +32,12 @@ Then check:
 
 ```bash
 curl http://YOUR_UBUNTU_IP:8000/healthz
+```
+
+Open the admin UI:
+
+```text
+http://YOUR_UBUNTU_IP:8000/admin
 ```
 
 ## Documentation

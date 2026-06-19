@@ -5,7 +5,6 @@ import hashlib
 import json
 import re
 import socket
-import threading
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from html import escape
@@ -39,6 +38,12 @@ class SixBackHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         self._dispatch("POST")
+
+    def do_PUT(self) -> None:
+        self._dispatch("PUT")
+
+    def do_DELETE(self) -> None:
+        self._dispatch("DELETE")
 
     def log_message(self, fmt: str, *args: Any) -> None:
         print(f"{self.client_address[0]} - {fmt % args}")
@@ -91,11 +96,15 @@ class SixBackServer(ThreadingHTTPServer):
 
     def _register_routes(self) -> None:
         self.route("GET", r"/", handle_root)
+        self.route("GET", r"/admin", handle_admin)
         self.route("GET", r"/healthz", handle_healthz)
         self.route("GET", r"/api/speakers", handle_list_speakers)
         self.route("POST", r"/api/speakers", handle_add_speaker)
         self.route("POST", r"/api/speakers/(?P<device_id>[^/]+)/import-presets", handle_import_presets)
         self.route("POST", r"/api/speakers/(?P<device_id>[^/]+)/migrate", handle_migrate)
+        self.route("GET", r"/api/speakers/(?P<device_id>[^/]+)/presets", handle_get_presets)
+        self.route("PUT", r"/api/speakers/(?P<device_id>[^/]+)/presets/(?P<slot>[1-6])", handle_put_preset)
+        self.route("DELETE", r"/api/speakers/(?P<device_id>[^/]+)/presets/(?P<slot>[1-6])", handle_delete_preset)
         self.route("GET", r"/bmx/registry/v1/services", handle_bmx_services)
         self.route("GET", r"/bmx/registry/v1/servicesAvailability", handle_bmx_services_availability)
         self.route("POST", r"/bmx/tunein/v1/token", handle_tunein_token)
@@ -117,19 +126,13 @@ class SixBackServer(ThreadingHTTPServer):
 
 
 def handle_root(req: SixBackHandler) -> None:
-    req.send_json(
-        {
-            "name": "sixback-ubuntu",
-            "version": __version__,
-            "public_base": req.server.public_base,
-            "admin": {
-                "list_speakers": "GET /api/speakers",
-                "add_speaker": 'POST /api/speakers {"ip":"192.168.1.50"}',
-                "import_presets": "POST /api/speakers/{device_id}/import-presets",
-                "migrate": "POST /api/speakers/{device_id}/migrate",
-            },
-        }
-    )
+    req.send_response(302)
+    req.send_header("Location", "/admin")
+    req.end_headers()
+
+
+def handle_admin(req: SixBackHandler) -> None:
+    req.send_bytes(ADMIN_HTML.encode("utf-8"), content_type="text/html; charset=utf-8")
 
 
 def handle_healthz(req: SixBackHandler) -> None:
@@ -159,6 +162,75 @@ def handle_import_presets(req: SixBackHandler, device_id: str) -> None:
     presets = import_presets(speaker["ip"])
     req.server.store.replace_presets(device_id, presets)
     req.send_json({"device_id": device_id, "imported": len(presets), "presets": presets})
+
+
+def handle_get_presets(req: SixBackHandler, device_id: str) -> None:
+    speaker = req.server.store.get_speaker(device_id)
+    if not speaker:
+        req.send_json({"error": "unknown speaker"}, 404)
+        return
+    req.send_json({"device_id": device_id, "presets": req.server.store.preset_slots_for_speaker(device_id)})
+
+
+def handle_put_preset(req: SixBackHandler, device_id: str, slot: str) -> None:
+    speaker = req.server.store.get_speaker(device_id)
+    if not speaker:
+        req.send_json({"error": "unknown speaker"}, 404)
+        return
+    body = req.read_json()
+    try:
+        preset = normalize_admin_preset(body, int(slot))
+    except ValueError as exc:
+        req.send_json({"error": "invalid_preset", "message": str(exc)}, 400)
+        return
+    if preset["source"] == "SIRIUSXM":
+        req.send_json(
+            {
+                "error": "unsupported_source",
+                "message": "SiriusXM presets need authenticated SiriusXM/Bose adapter support, which this MVP does not implement. Imported opaque SiriusXM presets may be preserved, but new SiriusXM presets cannot be created yet.",
+            },
+            501,
+        )
+        return
+    saved = req.server.store.set_preset(device_id, {"device_id": device_id, **preset})
+    req.send_json({"device_id": device_id, "preset": saved})
+
+
+def handle_delete_preset(req: SixBackHandler, device_id: str, slot: str) -> None:
+    speaker = req.server.store.get_speaker(device_id)
+    if not speaker:
+        req.send_json({"error": "unknown speaker"}, 404)
+        return
+    req.server.store.clear_preset(device_id, int(slot))
+    req.send_json({"device_id": device_id, "slot": int(slot), "cleared": True})
+
+
+def normalize_admin_preset(body: Json, slot: int) -> Json:
+    source = str(body.get("source", "")).strip().upper()
+    name = str(body.get("name", "")).strip()
+    station_id = str(body.get("station_id", "")).strip()
+    stream_url = str(body.get("stream_url", "")).strip()
+    image_url = str(body.get("image_url", "")).strip()
+    if source not in {"TUNEIN", "LOCAL_INTERNET_RADIO", "SIRIUSXM"}:
+        raise ValueError("source must be TUNEIN, LOCAL_INTERNET_RADIO, or SIRIUSXM")
+    if not name:
+        raise ValueError("name is required")
+    if source == "TUNEIN" and not station_id:
+        raise ValueError("station_id is required for TuneIn presets")
+    if source == "LOCAL_INTERNET_RADIO":
+        if not stream_url:
+            raise ValueError("stream_url is required for direct stream presets")
+        if not (stream_url.startswith("http://") or stream_url.startswith("https://")):
+            raise ValueError("stream_url must start with http:// or https://")
+    return {
+        "slot": slot,
+        "source": source,
+        "name": name,
+        "station_id": station_id if source == "TUNEIN" else "",
+        "stream_url": stream_url if source == "LOCAL_INTERNET_RADIO" else "",
+        "image_url": image_url,
+        "raw_content_item": "",
+    }
 
 
 def handle_migrate(req: SixBackHandler, device_id: str) -> None:
@@ -282,6 +354,400 @@ def handle_empty(req: SixBackHandler, **_: str) -> None:
     req.send_text("")
 
 
+ADMIN_HTML = """<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SixBack Ubuntu</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #1f2933;
+      --muted: #5e6b76;
+      --line: #d7dde4;
+      --panel: #ffffff;
+      --bg: #eef2f6;
+      --action: #126b5c;
+      --warn: #9f4b14;
+      --bad: #a83232;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--ink);
+      font: 15px/1.45 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 18px 24px;
+      border-bottom: 1px solid var(--line);
+      background: #f8fafc;
+    }
+    h1 { margin: 0; font-size: 20px; font-weight: 700; }
+    h2 { margin: 0 0 10px; font-size: 16px; }
+    main {
+      display: grid;
+      grid-template-columns: minmax(240px, 320px) minmax(0, 1fr);
+      gap: 20px;
+      max-width: 1180px;
+      margin: 0 auto;
+      padding: 20px;
+    }
+    section {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 16px;
+    }
+    .speaker-list {
+      display: grid;
+      gap: 8px;
+      margin-top: 12px;
+    }
+    .speaker-button {
+      width: 100%;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 10px;
+      background: #fff;
+      color: var(--ink);
+      text-align: left;
+      cursor: pointer;
+    }
+    .speaker-button.active {
+      border-color: var(--action);
+      outline: 2px solid rgba(18, 107, 92, .16);
+    }
+    .meta { color: var(--muted); font-size: 13px; overflow-wrap: anywhere; }
+    .toolbar {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: center;
+      margin: 12px 0;
+    }
+    button {
+      border: 1px solid var(--action);
+      border-radius: 6px;
+      padding: 8px 11px;
+      background: var(--action);
+      color: #fff;
+      cursor: pointer;
+      font-weight: 650;
+    }
+    button.secondary {
+      background: #fff;
+      color: var(--action);
+    }
+    button.danger {
+      border-color: var(--bad);
+      background: #fff;
+      color: var(--bad);
+    }
+    input, select {
+      width: 100%;
+      min-height: 36px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 7px 9px;
+      background: #fff;
+      color: var(--ink);
+    }
+    label {
+      display: grid;
+      gap: 5px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 700;
+      text-transform: uppercase;
+    }
+    .add-row {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 8px;
+      align-items: end;
+    }
+    .preset-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(280px, 1fr));
+      gap: 12px;
+    }
+    .preset-card {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 12px;
+      display: grid;
+      gap: 10px;
+      background: #fff;
+    }
+    .preset-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+    }
+    .slot {
+      width: 32px;
+      height: 32px;
+      display: grid;
+      place-items: center;
+      border-radius: 50%;
+      background: #243b53;
+      color: #fff;
+      font-weight: 800;
+      flex: 0 0 auto;
+    }
+    .fields {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+    }
+    .wide { grid-column: 1 / -1; }
+    .status {
+      min-height: 22px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+    .status.error { color: var(--bad); }
+    .status.ok { color: var(--action); }
+    .status.warn { color: var(--warn); }
+    @media (max-width: 820px) {
+      main { grid-template-columns: 1fr; padding: 12px; }
+      header { align-items: flex-start; flex-direction: column; }
+      .preset-grid { grid-template-columns: 1fr; }
+      .fields { grid-template-columns: 1fr; }
+      .add-row { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>SixBack Ubuntu</h1>
+    <div class="meta" id="serverMeta"></div>
+  </header>
+  <main>
+    <section>
+      <h2>Speakers</h2>
+      <div class="add-row">
+        <label>Speaker IP
+          <input id="speakerIp" inputmode="decimal" placeholder="192.168.10.50">
+        </label>
+        <button id="addSpeaker">Add</button>
+      </div>
+      <div class="toolbar">
+        <button class="secondary" id="refreshSpeakers">Refresh</button>
+      </div>
+      <div class="speaker-list" id="speakerList"></div>
+    </section>
+    <section>
+      <h2 id="selectedTitle">Presets</h2>
+      <div class="toolbar">
+        <button class="secondary" id="importPresets">Import From Speaker</button>
+        <button class="secondary" id="reloadPresets">Reload</button>
+        <button class="secondary" id="migrateSpeaker">Migrate</button>
+      </div>
+      <div class="status" id="status"></div>
+      <div class="preset-grid" id="presetGrid"></div>
+    </section>
+  </main>
+  <script>
+    const state = { speakers: [], selected: null, presets: [] };
+    const $ = (id) => document.getElementById(id);
+
+    async function api(path, options = {}) {
+      const res = await fetch(path, {
+        ...options,
+        headers: { 'Content-Type': 'application/json', ...(options.headers || {}) },
+      });
+      const text = await res.text();
+      let data = {};
+      try { data = text ? JSON.parse(text) : {}; } catch { data = { raw: text }; }
+      if (!res.ok) throw new Error(data.message || data.error || `${res.status} ${res.statusText}`);
+      return data;
+    }
+
+    function setStatus(text, kind = '') {
+      const el = $('status');
+      el.textContent = text;
+      el.className = `status ${kind}`.trim();
+    }
+
+    async function loadSpeakers() {
+      const data = await api('/api/speakers');
+      state.speakers = data.speakers || [];
+      if (!state.selected && state.speakers.length) state.selected = state.speakers[0].device_id;
+      renderSpeakers();
+      if (state.selected) await loadPresets();
+    }
+
+    function renderSpeakers() {
+      const list = $('speakerList');
+      list.innerHTML = '';
+      if (!state.speakers.length) {
+        list.innerHTML = '<div class="meta">No speakers registered.</div>';
+        $('selectedTitle').textContent = 'Presets';
+        $('presetGrid').innerHTML = '';
+        return;
+      }
+      for (const sp of state.speakers) {
+        const btn = document.createElement('button');
+        btn.className = `speaker-button ${sp.device_id === state.selected ? 'active' : ''}`.trim();
+        btn.innerHTML = `<strong>${escapeHtml(sp.name || sp.device_id)}</strong><div class="meta">${escapeHtml(sp.ip)} - ${escapeHtml(sp.device_id)}</div>`;
+        btn.onclick = async () => {
+          state.selected = sp.device_id;
+          renderSpeakers();
+          await loadPresets();
+        };
+        list.appendChild(btn);
+      }
+    }
+
+    async function loadPresets() {
+      const speaker = currentSpeaker();
+      if (!speaker) return;
+      $('selectedTitle').textContent = `${speaker.name || speaker.device_id} Presets`;
+      const data = await api(`/api/speakers/${encodeURIComponent(speaker.device_id)}/presets`);
+      state.presets = data.presets || [];
+      renderPresets();
+    }
+
+    function renderPresets() {
+      const grid = $('presetGrid');
+      grid.innerHTML = '';
+      for (const preset of state.presets) {
+        const card = document.createElement('div');
+        card.className = 'preset-card';
+        card.dataset.slot = preset.slot;
+        card.innerHTML = `
+          <div class="preset-head">
+            <div class="slot">${preset.slot}</div>
+            <div class="meta">${escapeHtml(preset.source || 'EMPTY')}</div>
+          </div>
+          <div class="fields">
+            <label>Source
+              <select data-field="source">
+                <option value="TUNEIN">TuneIn</option>
+                <option value="LOCAL_INTERNET_RADIO">Direct Stream</option>
+                <option value="SIRIUSXM">SiriusXM</option>
+              </select>
+            </label>
+            <label>Name
+              <input data-field="name" value="${escapeAttr(preset.name || '')}">
+            </label>
+            <label class="wide tunein">TuneIn Station ID
+              <input data-field="station_id" value="${escapeAttr(preset.station_id || '')}">
+            </label>
+            <label class="wide stream">Stream URL
+              <input data-field="stream_url" value="${escapeAttr(preset.stream_url || '')}">
+            </label>
+            <label class="wide">Image URL
+              <input data-field="image_url" value="${escapeAttr(preset.image_url || '')}">
+            </label>
+          </div>
+          <div class="toolbar">
+            <button data-action="save">Save</button>
+            <button class="danger" data-action="clear">Clear</button>
+          </div>
+          <div class="status" data-role="card-status"></div>
+        `;
+        grid.appendChild(card);
+        card.querySelector('[data-field="source"]').value =
+          preset.source === 'LOCAL_INTERNET_RADIO' ? 'LOCAL_INTERNET_RADIO' :
+          preset.source === 'SIRIUSXM' ? 'SIRIUSXM' : 'TUNEIN';
+        syncSourceFields(card);
+        card.querySelector('[data-field="source"]').onchange = () => syncSourceFields(card);
+        card.querySelector('[data-action="save"]').onclick = () => savePreset(card);
+        card.querySelector('[data-action="clear"]').onclick = () => clearPreset(card);
+      }
+    }
+
+    function syncSourceFields(card) {
+      const source = card.querySelector('[data-field="source"]').value;
+      card.querySelector('.tunein').style.display = source === 'TUNEIN' ? 'grid' : 'none';
+      card.querySelector('.stream').style.display = source === 'LOCAL_INTERNET_RADIO' ? 'grid' : 'none';
+      const msg = card.querySelector('[data-role="card-status"]');
+      msg.textContent = source === 'SIRIUSXM' ? 'SiriusXM requires authenticated adapter support and cannot be created by this MVP.' : '';
+      msg.className = source === 'SIRIUSXM' ? 'status warn' : 'status';
+    }
+
+    async function savePreset(card) {
+      const speaker = currentSpeaker();
+      const slot = Number(card.dataset.slot);
+      const payload = Object.fromEntries([...card.querySelectorAll('[data-field]')].map((el) => [el.dataset.field, el.value.trim()]));
+      const status = card.querySelector('[data-role="card-status"]');
+      try {
+        await api(`/api/speakers/${encodeURIComponent(speaker.device_id)}/presets/${slot}`, {
+          method: 'PUT',
+          body: JSON.stringify(payload),
+        });
+        status.textContent = 'Saved';
+        status.className = 'status ok';
+        await loadPresets();
+      } catch (err) {
+        status.textContent = err.message;
+        status.className = 'status error';
+      }
+    }
+
+    async function clearPreset(card) {
+      const speaker = currentSpeaker();
+      const slot = Number(card.dataset.slot);
+      await api(`/api/speakers/${encodeURIComponent(speaker.device_id)}/presets/${slot}`, { method: 'DELETE' });
+      setStatus(`Slot ${slot} cleared`, 'ok');
+      await loadPresets();
+    }
+
+    function currentSpeaker() {
+      return state.speakers.find((sp) => sp.device_id === state.selected);
+    }
+
+    function escapeHtml(value) {
+      return String(value).replace(/[&<>"']/g, (ch) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
+    }
+
+    function escapeAttr(value) {
+      return escapeHtml(value).replace(/`/g, '&#96;');
+    }
+
+    $('refreshSpeakers').onclick = () => loadSpeakers().catch((err) => setStatus(err.message, 'error'));
+    $('reloadPresets').onclick = () => loadPresets().catch((err) => setStatus(err.message, 'error'));
+    $('addSpeaker').onclick = async () => {
+      const ip = $('speakerIp').value.trim();
+      if (!ip) return;
+      const data = await api('/api/speakers', { method: 'POST', body: JSON.stringify({ ip }) });
+      state.selected = data.speaker.device_id;
+      $('speakerIp').value = '';
+      setStatus('Speaker added', 'ok');
+      await loadSpeakers();
+    };
+    $('importPresets').onclick = async () => {
+      const speaker = currentSpeaker();
+      if (!speaker) return;
+      const data = await api(`/api/speakers/${encodeURIComponent(speaker.device_id)}/import-presets`, { method: 'POST' });
+      setStatus(`Imported ${data.imported} preset(s)`, 'ok');
+      await loadPresets();
+    };
+    $('migrateSpeaker').onclick = async () => {
+      const speaker = currentSpeaker();
+      if (!speaker) return;
+      await api(`/api/speakers/${encodeURIComponent(speaker.device_id)}/migrate`, { method: 'POST', body: '{}' });
+      setStatus('Migration command sent; speaker will reboot', 'ok');
+      await loadSpeakers();
+    };
+
+    $('serverMeta').textContent = window.location.origin;
+    loadSpeakers().catch((err) => setStatus(err.message, 'error'));
+  </script>
+</body>
+</html>
+"""
+
+
 def guess_lan_ip() -> str:
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
@@ -310,3 +776,4 @@ def main(argv: list[str] | None = None) -> None:
 
 if __name__ == "__main__":
     main()
+

@@ -7,6 +7,7 @@ It supports:
 
 - manual SoundTouch speaker IP registration,
 - importing existing presets from `http://speaker-ip:8090/presets`,
+- setting and clearing TuneIn or direct-stream preset slots,
 - migrating the speaker over Bose diagnostic telnet on port `17000`,
 - serving the key local Bose cloud endpoints on port `8000`,
 - TuneIn station resolution,
@@ -15,6 +16,10 @@ It supports:
 It does not yet attempt full SixBack parity. Spotify, the polished ESP32 Web UI,
 DLNA browsing, OTA handling, SSDP auto-discovery, and group orchestration are
 outside this MVP.
+
+SiriusXM presets are not supported for new slot creation yet. They require the
+authenticated SiriusXM/Bose adapter flow rather than only a channel ID. Imported
+opaque presets may be preserved, but the MVP cannot create new SiriusXM presets.
 
 This MVP is derived from the public SixBack protocol work and includes SixBack
 data assets. See `SIXBACK_LICENSE`; noncommercial terms apply to those parts.
@@ -32,6 +37,12 @@ python3 -m sixback_ubuntu --host 0.0.0.0 --port 8000 --public-base http://192.16
 If `--public-base` is omitted, the server guesses a LAN IP, but an explicit
 value is safer.
 
+Open the admin UI:
+
+```text
+http://192.168.1.25:8000/admin
+```
+
 ## Basic Flow
 
 Add a speaker by IP:
@@ -46,6 +57,28 @@ Import the existing six hardware presets:
 
 ```bash
 curl -X POST http://localhost:8000/api/speakers/DEVICE_ID/import-presets
+```
+
+Set a TuneIn preset:
+
+```bash
+curl -X PUT http://localhost:8000/api/speakers/DEVICE_ID/presets/1 \
+  -H 'Content-Type: application/json' \
+  -d '{"source":"TUNEIN","name":"Jazz","station_id":"s12345"}'
+```
+
+Set a direct stream preset:
+
+```bash
+curl -X PUT http://localhost:8000/api/speakers/DEVICE_ID/presets/2 \
+  -H 'Content-Type: application/json' \
+  -d '{"source":"LOCAL_INTERNET_RADIO","name":"Local Stream","stream_url":"https://example.com/stream.mp3"}'
+```
+
+Clear a preset:
+
+```bash
+curl -X DELETE http://localhost:8000/api/speakers/DEVICE_ID/presets/2
 ```
 
 Migrate the speaker to this Ubuntu service:
