@@ -76,7 +76,7 @@ def account_full(store: Store, account_id: str) -> bytes:
         f"<account><id>{escape(account_id or 'sixback-local')}</id>"
         "<accountStatus>ACTIVE</accountStatus><mode>NORMAL</mode>"
         "<preferredLanguage>en-US</preferredLanguage>"
-        f"<devices>{devices}</devices>{sources_xml()}</account>"
+        f"<devices>{devices}</devices>{sources_xml(store, account_id)}</account>"
     )
     return xml.encode("utf-8")
 
@@ -114,17 +114,32 @@ def _device_xml(store: Store, speaker: dict[str, Any]) -> str:
     )
 
 
-def sources_xml() -> str:
-    return (
+def sources_xml(store: Store | None = None, account_id: str = "") -> str:
+    parts = [
         "<sources>"
         '<source id="1" type="Audio"><name>TuneIn</name><sourceproviderid>25</sourceproviderid>'
         "<sourcename>TUNEIN</sourcename><credential type=\"token\"></credential><username></username></source>"
         '<source id="3" type="Audio"><name>Local Internet Radio</name><sourceproviderid>11</sourceproviderid>'
         "<sourcename>LOCAL_INTERNET_RADIO</sourcename><credential type=\"token\"></credential><username></username></source>"
-        '<source id="4" type="Audio"><name>SiriusXM</name><sourceproviderid>38</sourceproviderid>'
-        "<sourcename>SIRIUSXM_EVEREST</sourcename><credential type=\"token\"></credential><username></username></source>"
-        "</sources>"
-    )
+    ]
+    accounts = store.siriusxm_source_accounts(account_id) if store else []
+    if accounts:
+        for idx, account in enumerate(accounts, start=4):
+            username = escape(account["source_account"])
+            name = escape(account.get("name") or "SiriusXM")
+            parts.append(
+                f'<source id="{idx}" type="Audio"><name>{name}</name><sourceproviderid>38</sourceproviderid>'
+                f'<sourcename>SIRIUSXM_EVEREST</sourcename><credential type="token"></credential>'
+                f"<username>{username}</username></source>"
+            )
+    else:
+        parts.append(
+            '<source id="4" type="Audio"><name>SiriusXM</name><sourceproviderid>38</sourceproviderid>'
+            '<sourcename>SIRIUSXM_EVEREST</sourcename><credential type="token"></credential>'
+            "<username></username></source>"
+        )
+    parts.append("</sources>")
+    return "".join(parts)
 
 
 def tunein_token() -> bytes:

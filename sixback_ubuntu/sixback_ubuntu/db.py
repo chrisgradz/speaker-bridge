@@ -214,6 +214,28 @@ class Store:
         rows = self.conn.execute("SELECT * FROM siriusxm_channels ORDER BY station_id").fetchall()
         return [dict(row) for row in rows]
 
+    def siriusxm_source_accounts(self, account_id: str = "") -> list[dict[str, Any]]:
+        speakers = self.speakers_for_account(account_id)
+        accounts: dict[str, dict[str, Any]] = {}
+        for speaker in speakers:
+            for preset in self.presets_for_speaker(speaker["device_id"]):
+                if preset.get("source") != "SIRIUSXM":
+                    continue
+                raw = str(preset.get("raw_content_item", ""))
+                source_account = _xml_attr(raw, "sourceAccount")
+                if not source_account:
+                    continue
+                existing = accounts.setdefault(
+                    source_account,
+                    {
+                        "source_account": source_account,
+                        "name": preset.get("name") or "SiriusXM",
+                    },
+                )
+                if not existing.get("name") and preset.get("name"):
+                    existing["name"] = preset["name"]
+        return list(accounts.values())
+
     def add_scmudc_event(self, device_id: str, summary: str, body: str) -> None:
         with self.conn:
             self.conn.execute(

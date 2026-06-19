@@ -405,10 +405,34 @@ def summarize_scmudc(body: str) -> str:
             continue
         event_type = str(event.get("type") or event.get("eventType") or "event")
         event_data = event.get("data") if isinstance(event.get("data"), dict) else event
-        source = event_data.get("source") or event_data.get("sourceName") or event_data.get("sourceType") or ""
-        state = event_data.get("state") or event_data.get("playStatus") or event_data.get("status") or ""
+        now_playing = event_data.get("nowPlaying") if isinstance(event_data.get("nowPlaying"), dict) else {}
+        np_content = now_playing.get("contentItem") if isinstance(now_playing.get("contentItem"), dict) else {}
+        source = (
+            event_data.get("source")
+            or event_data.get("sourceName")
+            or event_data.get("sourceType")
+            or now_playing.get("source")
+            or np_content.get("source")
+            or ""
+        )
+        state = (
+            event_data.get("state")
+            or event_data.get("playStatus")
+            or event_data.get("status")
+            or event_data.get("system-state")
+            or now_playing.get("playStatus")
+            or ""
+        )
         error = event_data.get("error") or event_data.get("errorCode") or event_data.get("reason") or ""
-        item = event_data.get("itemName") or event_data.get("name") or event_data.get("trackName") or ""
+        item = (
+            event_data.get("itemName")
+            or event_data.get("name")
+            or event_data.get("trackName")
+            or textish(np_content.get("itemName"))
+            or textish(now_playing.get("track"))
+            or textish(now_playing.get("stationName"))
+            or ""
+        )
         fields = [event_type]
         for value in (source, state, error, item):
             if value:
@@ -420,12 +444,21 @@ def summarize_scmudc(body: str) -> str:
     return f"json keys={','.join(keys)} bytes={len(body)}"
 
 
+def textish(value: Any) -> str:
+    if isinstance(value, dict):
+        return str(value.get("text") or "")
+    return str(value or "")
+
+
 def handle_account_full(req: SixBackHandler, account_id: str) -> None:
     req.send_bytes(account_full(req.server.store, account_id), content_type="application/xml")
 
 
 def handle_sources(req: SixBackHandler, account_id: str) -> None:
-    req.send_text(f'<?xml version="1.0" standalone="yes"?>{sources_xml()}', content_type="application/xml")
+    req.send_text(
+        f'<?xml version="1.0" standalone="yes"?>{sources_xml(req.server.store, account_id)}',
+        content_type="application/xml",
+    )
 
 
 def handle_account_presets(req: SixBackHandler, account_id: str) -> None:
