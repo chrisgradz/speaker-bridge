@@ -634,6 +634,18 @@ class SiriusXmAuthTests(unittest.TestCase):
         self.assertIn("http://ubuntu.example:8000/siriusxm/proxy/firstwave/playlist.m3u8", body)
         self.assertNotIn("/siriusxm/needs-auth/firstwave", body)
 
+    def test_siriusxm_station_uses_longer_buffer_window(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Store(os.path.join(tmp, "state.sqlite3"))
+            store.upsert_siriusxm_channel("firstwave", {"name": "1st Wave"})
+
+            payload = json.loads(siriusxm_station(store, "firstwave", "http://ubuntu.example:8000"))
+            store.conn.close()
+
+        self.assertEqual(payload["audio"]["maxTimeout"], 180)
+        self.assertEqual(payload["audio"]["streams"][0]["bufferingTimeout"], 120)
+        self.assertEqual(payload["audio"]["streams"][0]["connectingTimeout"], 20)
+
     def test_siriusxm_now_playing_payload_uses_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             store = Store(os.path.join(tmp, "state.sqlite3"))
@@ -657,6 +669,30 @@ class SiriusXmAuthTests(unittest.TestCase):
         self.assertEqual(payload["artistName"], "The Cure")
         self.assertEqual(payload["albumName"], "Kiss Me, Kiss Me, Kiss Me")
         self.assertEqual(payload["containerArt"], "https://img.example/cure.jpg")
+
+    def test_siriusxm_now_playing_payload_includes_bose_nested_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Store(os.path.join(tmp, "state.sqlite3"))
+
+            body = siriusxm_now_playing(
+                store,
+                "firstwave",
+                {
+                    "stationName": "1st Wave",
+                    "trackName": "Just Like Heaven",
+                    "artistName": "The Cure",
+                    "albumName": "Kiss Me, Kiss Me, Kiss Me",
+                    "imageUrl": "https://img.example/cure.jpg",
+                },
+            ).decode("utf-8")
+            store.conn.close()
+
+        payload = json.loads(body)
+        self.assertEqual(payload["track"]["text"], "Just Like Heaven")
+        self.assertEqual(payload["artist"]["text"], "The Cure")
+        self.assertEqual(payload["album"]["text"], "Kiss Me, Kiss Me, Kiss Me")
+        self.assertEqual(payload["art"]["artImageStatus"], "IMAGE_PRESENT")
+        self.assertEqual(payload["art"]["text"], "https://img.example/cure.jpg")
 
     def test_siriusxm_error_sanitizer_removes_secrets_and_queries(self) -> None:
         message = (

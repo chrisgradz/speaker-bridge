@@ -700,7 +700,7 @@ def inherit_playlist_auth_query(target: str, playlist_url: str) -> str:
     )
 
 
-def trim_hls_playlist(body: str, max_segments: int = 6) -> str:
+def trim_hls_playlist(body: str, max_segments: int = 12) -> str:
     header: list[str] = []
     groups: list[list[str]] = []
     pending: list[str] = []

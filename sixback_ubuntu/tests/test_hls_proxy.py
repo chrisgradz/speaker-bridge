@@ -56,6 +56,32 @@ class HlsProxyTests(unittest.TestCase):
             if line.startswith("#EXTINF:"):
                 self.assertFalse(lines[index + 1].startswith("#"))
 
+    def test_trim_hls_playlist_default_keeps_larger_live_window(self) -> None:
+        body = "\n".join(
+            [
+                "#EXTM3U",
+                "#EXT-X-VERSION:3",
+                "#EXT-X-TARGETDURATION:10",
+                "#EXT-X-MEDIA-SEQUENCE:200",
+                *[
+                    line
+                    for index in range(15)
+                    for line in (
+                        "#EXTINF:9.75,",
+                        f"segment-{index}.aac",
+                    )
+                ],
+            ]
+        )
+
+        trimmed = trim_hls_playlist(body)
+
+        self.assertIn("#EXT-X-MEDIA-SEQUENCE:203", trimmed)
+        self.assertNotIn("segment-2.aac", trimmed)
+        self.assertIn("segment-3.aac", trimmed)
+        self.assertIn("segment-14.aac", trimmed)
+        self.assertEqual(summarize_hls_playlist("firstwave", trimmed).count("media=12"), 1)
+
     def test_rewrite_hls_playlist_uses_root_relative_token_urls(self) -> None:
         server = FakeServer()
         body = "\n".join(

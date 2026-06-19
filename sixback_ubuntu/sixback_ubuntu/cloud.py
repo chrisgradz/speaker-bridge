@@ -183,12 +183,12 @@ def siriusxm_station(store: Store, station_id: str, base_url: str) -> bytes:
         "audio": {
             "hasPlaylist": True,
             "isRealtime": True,
-            "maxTimeout": 60,
+            "maxTimeout": 180,
             "streamUrl": stream_url,
             "streams": [
                 {
-                    "bufferingTimeout": 20,
-                    "connectingTimeout": 10,
+                    "bufferingTimeout": 120,
+                    "connectingTimeout": 20,
                     "hasPlaylist": True,
                     "isRealtime": True,
                     "streamUrl": stream_url,
@@ -230,6 +230,18 @@ def siriusxm_now_playing(store: Store, station_id: str, metadata: dict[str, str]
         payload.update({key: value for key, value in metadata.items() if value})
         if payload.get("imageUrl") and not payload.get("containerArt"):
             payload["containerArt"] = payload["imageUrl"]
+    image = str(payload.get("imageUrl") or payload.get("containerArt") or "")
+    payload.update(
+        {
+            "track": {"text": str(payload.get("trackName") or "")},
+            "artist": {"text": str(payload.get("artistName") or "")},
+            "album": {"text": str(payload.get("albumName") or "")},
+            "art": {
+                "artImageStatus": "IMAGE_PRESENT" if image else "SHOW_DEFAULT_IMAGE",
+                "text": image,
+            },
+        }
+    )
     return json.dumps(payload, separators=(",", ":")).encode("utf-8")
 
 
