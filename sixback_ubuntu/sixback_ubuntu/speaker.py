@@ -21,6 +21,17 @@ def _http_get(url: str, timeout: float = 5.0) -> bytes:
         return resp.read()
 
 
+def _http_post_xml(url: str, body: str, timeout: float = 5.0) -> bytes:
+    req = urllib.request.Request(
+        url,
+        data=body.encode("utf-8"),
+        headers={"User-Agent": "sixback-ubuntu/0.1", "Content-Type": "application/xml"},
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return resp.read()
+
+
 def _text(node: ET.Element, tag: str) -> str:
     found = node.find(tag)
     return (found.text or "").strip() if found is not None else ""
@@ -62,6 +73,12 @@ def parse_presets_xml(xml: str) -> list[dict[str, Any]]:
 def import_presets(ip: str) -> list[dict[str, Any]]:
     body = _http_get(f"http://{ip}:{BOSE_BMX_PORT}/presets", timeout=8).decode("utf-8", "replace")
     return parse_presets_xml(body)
+
+
+def select_content_item(ip: str, raw_content_item: str) -> None:
+    if not raw_content_item.strip():
+        raise ValueError("raw_content_item is required")
+    _http_post_xml(f"http://{ip}:{BOSE_BMX_PORT}/select", raw_content_item, timeout=4)
 
 
 def _normalize_preset(

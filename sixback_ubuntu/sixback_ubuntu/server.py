@@ -8,6 +8,7 @@ import os
 import re
 import socket
 import time
+import threading
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -36,7 +37,7 @@ from .cloud import (
     tunein_token,
 )
 from .db import Store
-from .speaker import import_presets, migrate_speaker, probe_speaker
+from .speaker import import_presets, migrate_speaker, probe_speaker, select_content_item
 from .siriusxm import (
     DEFAULT_ENV_FILE,
     SiriusXmCredentials,
@@ -1023,7 +1024,56 @@ def handle_scmudc(req: SixBackHandler, device_id: str) -> None:
     if summary:
         req.server.store.add_scmudc_event(device_id, summary, body)
         print(f"[scmudc] {device_id} {summary}")
+    maybe_override_siriusxm_preset_press(req.server.store, device_id, body)
     req.send_text("")
+
+
+def maybe_override_siriusxm_preset_press(store: Store, device_id: str, body: str) -> None:
+    slot = pressed_preset_slot(body)
+    if not slot:
+        return
+    speaker = store.get_speaker(device_id)
+    if not speaker:
+        return
+    preset = store.get_preset(device_id, slot)
+    if preset.get("source") != "SIRIUSXM" or not preset.get("raw_content_item"):
+        return
+    thread = threading.Thread(
+        target=select_siriusxm_preset_content,
+        args=(str(speaker.get("ip", "")), str(preset["raw_content_item"]), device_id, slot),
+        daemon=True,
+    )
+    thread.start()
+
+
+def pressed_preset_slot(body: str) -> int:
+    try:
+        data = json.loads(body) if body else {}
+    except json.JSONDecodeError:
+        return 0
+    payload = data.get("payload") if isinstance(data, dict) else {}
+    events = payload.get("events") if isinstance(payload, dict) else None
+    if not isinstance(events, list):
+        events = data.get("events") if isinstance(data, dict) else []
+    for event in events if isinstance(events, list) else []:
+        if not isinstance(event, dict):
+            continue
+        event_type = str(event.get("type") or event.get("eventType") or "")
+        event_data = event.get("data") if isinstance(event.get("data"), dict) else event
+        button_id = str(event_data.get("buttonId") or event_data.get("button") or "")
+        match = re.fullmatch(r"PRESET_([1-6])", button_id)
+        if event_type == "preset-pressed" and match:
+            return int(match.group(1))
+    return 0
+
+
+def select_siriusxm_preset_content(ip: str, raw_content_item: str, device_id: str, slot: int) -> None:
+    try:
+        time.sleep(0.25)
+        select_content_item(ip, raw_content_item)
+        print(f"[preset-override] {device_id} slot={slot} sent /select")
+    except Exception as exc:
+        print(f"[preset-override] {device_id} slot={slot} failed: {type(exc).__name__}: {exc}")
 
 
 def summarize_scmudc(body: str) -> str:

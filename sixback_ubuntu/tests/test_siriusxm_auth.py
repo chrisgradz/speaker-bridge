@@ -31,6 +31,7 @@ from sixback_ubuntu.sixback_ubuntu.server import (
     handle_siriusxm_now_playing_debug,
     normalize_siriusxm_catalog_channel,
     prepare_admin_preset,
+    pressed_preset_slot,
     remember_siriusxm_station_alias,
     resolve_siriusxm_stream_url,
     resolve_siriusxm_station_alias,
@@ -935,6 +936,27 @@ class SiriusXmAuthTests(unittest.TestCase):
         self.assertEqual(payload["nowPlaying"]["track"]["text"], "80s on 8")
         self.assertEqual(payload["_meta"]["targetSource"], "SIRIUSXM")
         self.assertNotIn("s17947", json.dumps(payload))
+
+    def test_pressed_preset_slot_reads_scmudc_preset_events(self) -> None:
+        body = json.dumps(
+            {
+                "payload": {
+                    "events": [
+                        {
+                            "type": "preset-pressed",
+                            "data": {"buttonId": "PRESET_1", "origin": "ir-remote"},
+                        }
+                    ]
+                }
+            }
+        )
+
+        self.assertEqual(pressed_preset_slot(body), 1)
+
+    def test_pressed_preset_slot_ignores_non_preset_events(self) -> None:
+        body = json.dumps({"payload": {"events": [{"type": "power-pressed", "data": {"buttonId": "POWER"}}]}})
+
+        self.assertEqual(pressed_preset_slot(body), 0)
 
     def test_admin_ui_exposes_siriusxm_channel_picker(self) -> None:
         self.assertIn("siriusChannelSearch", ADMIN_HTML)
