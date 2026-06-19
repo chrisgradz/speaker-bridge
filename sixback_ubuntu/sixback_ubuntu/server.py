@@ -1999,7 +1999,10 @@ ADMIN_HTML = """<!doctype html>
       card.querySelector('[data-action="refresh-sirius"]').style.display = source === 'SIRIUSXM' ? 'inline-flex' : 'none';
       const msg = card.querySelector('[data-role="card-status"]');
       if (applyCardNotice(card)) return;
-      if (source === 'SIRIUSXM' && raw.includes('SIRIUSXM_EVEREST')) {
+      if (source === 'SIRIUSXM' && raw.includes('/experiments/siriusxm/display/playback/station/')) {
+        msg.textContent = 'SiriusXM display metadata experiment active.';
+        msg.className = 'status warn';
+      } else if (source === 'SIRIUSXM' && raw.includes('SIRIUSXM_EVEREST')) {
         msg.textContent = 'SiriusXM preset stored.';
         msg.className = 'status ok';
       } else if (source === 'SIRIUSXM') {
