@@ -403,6 +403,12 @@ class SiriusXmSession:
         channel_data = channel or {}
         station_name = str(channel_data.get("name", ""))
         entity_id = extract_entity_id(str(channel_data.get("entity_url", "")))
+        channel_info: dict[str, str] | None = None
+        if not entity_id:
+            channel_info = self.resolve_channel(station_id, channel_data)
+            resolved_guid = str(channel_info.get("guid", ""))
+            if resolved_guid and resolved_guid.lower() != station_id.lower():
+                entity_id = resolved_guid
         debug: dict[str, Any] = {
             "station_id": station_id,
             "station_name": station_name,
@@ -422,7 +428,8 @@ class SiriusXmSession:
                 debug["sources"].append(metadata_debug("edge_live_update", "station_only", metadata, data))
             except Exception as exc:
                 debug["sources"].append({"source": "edge_live_update", "result": "error", "error": describe_error(exc)})
-        channel_info = self.resolve_channel(station_id, channel_data)
+        if channel_info is None:
+            channel_info = self.resolve_channel(station_id, channel_data)
         data = self._get_k2("tune/now-playing-live", self._live_params(channel_info, station_id))
         metadata = extract_now_playing(data, station_id, station_name)
         debug["sources"].append(

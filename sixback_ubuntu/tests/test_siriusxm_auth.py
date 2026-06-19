@@ -469,6 +469,50 @@ class SiriusXmAuthTests(unittest.TestCase):
         self.assertEqual(metadata["artistName"], "The Cure")
         self.assertTrue(any("liveUpdate" in request.full_url for request in requests))
 
+    def test_session_now_playing_uses_catalog_guid_for_edge_live_update(self) -> None:
+        requests = []
+
+        def opener(request):
+            requests.append(request)
+            if "modify/authentication" in request.full_url or "resume" in request.full_url:
+                return b'{"ModuleListResponse":{"status":1}}'
+            if "liveUpdate" in request.full_url:
+                body = json.loads(request.data.decode("utf-8"))
+                self.assertEqual(body["channelId"], "big80s-guid")
+                return json.dumps(
+                    {
+                        "channelName": "80s on 8",
+                        "items": [
+                            {
+                                "name": "Everybody Wants To Rule The World",
+                                "artistName": "Tears For Fears",
+                            }
+                        ],
+                    }
+                ).encode("utf-8")
+            if "tune/now-playing-live" in request.full_url:
+                raise AssertionError("catalog GUID should allow edge metadata before K2 fallback")
+            raise AssertionError(f"unexpected URL {request.full_url}")
+
+        session = SiriusXmSession(
+            SiriusXmCredentials("listener@example.com", "secret password"),
+            opener=opener,
+        )
+        session.edge_access_token = "edge-access"
+        session.channels = [
+            {
+                "channelId": "big80s",
+                "channelGuid": "big80s-guid",
+                "channelName": "80s on 8",
+            }
+        ]
+
+        metadata = session.now_playing("big80s", {"name": "80s on 8"})
+
+        self.assertEqual(metadata["trackName"], "Everybody Wants To Rule The World")
+        self.assertEqual(metadata["artistName"], "Tears For Fears")
+        self.assertEqual(session.last_now_playing_debug["big80s"]["entity_id"], "big80s-guid")
+
     def test_edge_live_update_uses_authenticated_edge_access_token(self) -> None:
         requests = []
 
