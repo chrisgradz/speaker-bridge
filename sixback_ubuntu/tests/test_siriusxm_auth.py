@@ -357,6 +357,21 @@ class SiriusXmAuthTests(unittest.TestCase):
         self.assertEqual(metadata["artistName"], "The Cure")
         self.assertTrue(any("liveUpdate" in request.full_url for request in requests))
 
+    def test_edge_live_update_request_includes_session_auth(self) -> None:
+        session = SiriusXmSession(
+            SiriusXmCredentials("listener@example.com", "secret password"),
+            opener=lambda request: b"{}",
+        )
+        session.cookie_jar.set_cookie(make_cookie("SXMAKTOKEN", "token=abc,expires=tomorrow"))
+        session.cookie_jar.set_cookie(make_cookie("SXMDATA", "%7B%22gupId%22%3A%22gup-123%22%7D"))
+
+        request = session._edge_live_update_request("65f04311-3581-256c-97b9-279838d6ff5e")
+        headers = {name.lower(): value for name, value in request.header_items()}
+
+        self.assertEqual(headers["authorization"], "Bearer abc")
+        self.assertEqual(headers["x-sxm-token"], "abc")
+        self.assertEqual(headers["x-sxm-gup-id"], "gup-123")
+
     def test_session_now_playing_falls_back_to_k2_when_edge_metadata_fails(self) -> None:
         requests = []
 

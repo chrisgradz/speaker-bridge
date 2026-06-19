@@ -343,16 +343,24 @@ class SiriusXmSession:
             "startTimestamp": iso_z(now - dt.timedelta(minutes=8)),
             "endTimestamp": iso_z(now + dt.timedelta(minutes=2)),
         }
+        headers = {
+            "User-Agent": USER_AGENT,
+            "Accept": "application/json,text/plain,*/*",
+            "Content-Type": "application/json;charset=UTF-8",
+            "Origin": "https://www.siriusxm.com",
+            "Referer": "https://www.siriusxm.com/",
+        }
+        token = self._sxmak_token()
+        gup_id = self._gup_id()
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+            headers["X-Sxm-Token"] = token
+        if gup_id:
+            headers["X-Sxm-Gup-Id"] = gup_id
         return urllib.request.Request(
             EDGE_LIVE_UPDATE,
             data=json.dumps(payload, separators=(",", ":")).encode("utf-8"),
-            headers={
-                "User-Agent": USER_AGENT,
-                "Accept": "application/json,text/plain,*/*",
-                "Content-Type": "application/json;charset=UTF-8",
-                "Origin": "https://www.siriusxm.com",
-                "Referer": "https://www.siriusxm.com/",
-            },
+            headers=headers,
             method="POST",
         )
 
