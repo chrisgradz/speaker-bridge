@@ -61,6 +61,14 @@ CREATE TABLE IF NOT EXISTS cloud_responses (
     received_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     body TEXT NOT NULL DEFAULT ''
 );
+
+CREATE TABLE IF NOT EXISTS station_aliases (
+    source TEXT NOT NULL,
+    old_station_id TEXT NOT NULL,
+    new_station_id TEXT NOT NULL,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (source, old_station_id)
+);
 """
 
 
@@ -204,6 +212,38 @@ class Store:
             if raw_slug == station_id:
                 return preset
         return None
+
+    def upsert_station_alias(self, source: str, old_station_id: str, new_station_id: str) -> None:
+        if not source or not old_station_id or not new_station_id or old_station_id == new_station_id:
+            return
+        self.conn.execute(
+            """
+            INSERT INTO station_aliases(source, old_station_id, new_station_id)
+            VALUES(?, ?, ?)
+            ON CONFLICT(source, old_station_id) DO UPDATE SET
+                new_station_id=excluded.new_station_id,
+                updated_at=CURRENT_TIMESTAMP
+            """,
+            (source, old_station_id, new_station_id),
+        )
+        self.conn.commit()
+
+    def resolve_station_alias(self, source: str, station_id: str) -> str:
+        seen = {station_id}
+        current = station_id
+        for _ in range(5):
+            row = self.conn.execute(
+                "SELECT new_station_id FROM station_aliases WHERE source=? AND old_station_id=?",
+                (source, current),
+            ).fetchone()
+            if not row:
+                return current
+            next_id = str(row["new_station_id"])
+            if not next_id or next_id in seen:
+                return current
+            seen.add(next_id)
+            current = next_id
+        return current
 
     def upsert_siriusxm_channel(self, station_id: str, data: dict[str, Any]) -> dict[str, Any]:
         self.conn.execute(

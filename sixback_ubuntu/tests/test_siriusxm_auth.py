@@ -27,7 +27,9 @@ from sixback_ubuntu.sixback_ubuntu.server import (
     handle_siriusxm_now_playing_debug,
     normalize_siriusxm_catalog_channel,
     prepare_admin_preset,
+    remember_siriusxm_station_alias,
     resolve_siriusxm_stream_url,
+    resolve_siriusxm_station_alias,
     sanitize_siriusxm_error,
 )
 from sixback_ubuntu.sixback_ubuntu.speaker import preset_to_xml
@@ -840,6 +842,38 @@ class SiriusXmAuthTests(unittest.TestCase):
         self.assertIn("<sourcename>SIRIUSXM_EVEREST</sourcename>", xml)
         self.assertIn("<username>source-account-123</username>", xml)
         self.assertIn('location="/playback/station/classicvinyl?preset_play=True"', xml)
+
+    def test_siriusxm_preset_overwrite_creates_old_station_alias(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Store(os.path.join(tmp, "state.sqlite3"))
+            try:
+                remember_siriusxm_station_alias(
+                    store,
+                    {
+                        "source": "SIRIUSXM",
+                        "station_id": "firstwave?preset_play=True",
+                        "raw_content_item": (
+                            '<ContentItem source="SIRIUSXM_EVEREST" type="stationurl" '
+                            'location="/playback/station/firstwave?preset_play=True">'
+                            "<itemName>1st Wave</itemName></ContentItem>"
+                        ),
+                    },
+                    {
+                        "source": "SIRIUSXM",
+                        "station_id": "classicvinyl",
+                        "raw_content_item": (
+                            '<ContentItem source="SIRIUSXM_EVEREST" type="stationurl" '
+                            'location="/playback/station/classicvinyl?preset_play=True">'
+                            "<itemName>Classic Vinyl</itemName></ContentItem>"
+                        ),
+                    },
+                )
+
+                resolved = resolve_siriusxm_station_alias(store, "firstwave")
+            finally:
+                store.conn.close()
+
+        self.assertEqual(resolved, "classicvinyl")
 
     def test_admin_ui_exposes_siriusxm_channel_picker(self) -> None:
         self.assertIn("siriusChannelSearch", ADMIN_HTML)

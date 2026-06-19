@@ -255,12 +255,14 @@ def handle_put_preset(req: SixBackHandler, device_id: str, slot: str) -> None:
         req.send_json({"error": "unknown speaker"}, 404)
         return
     body = req.read_json()
+    old_preset = speaker_onboard_preset(speaker, int(slot)) or req.server.store.get_preset(device_id, int(slot))
     try:
         preset = prepare_admin_preset(req.server.store, device_id, body, int(slot))
     except ValueError as exc:
         req.send_json({"error": "invalid_preset", "message": str(exc)}, 400)
         return
     saved = req.server.store.set_preset(device_id, {"device_id": device_id, **preset})
+    remember_siriusxm_station_alias(req.server.store, old_preset, saved)
     req.send_json({"device_id": device_id, "preset": saved})
 
 
@@ -387,6 +389,37 @@ def xml_attr(text: str, name: str) -> str:
         .replace("&quot;", '"')
         .replace("&apos;", "'")
     )
+
+
+def remember_siriusxm_station_alias(store: Store, old_preset: Json, new_preset: Json) -> None:
+    if old_preset.get("source") != "SIRIUSXM" or new_preset.get("source") != "SIRIUSXM":
+        return
+    store.upsert_station_alias(
+        "SIRIUSXM",
+        siriusxm_station_slug(old_preset),
+        siriusxm_station_slug(new_preset),
+    )
+
+
+def speaker_onboard_preset(speaker: Json, slot: int) -> Json | None:
+    try:
+        presets = import_presets(str(speaker.get("ip", "")))
+    except Exception:
+        return None
+    for preset in presets:
+        if int(preset.get("slot", 0)) == slot:
+            return preset
+    return None
+
+
+def siriusxm_station_slug(preset: Json) -> str:
+    raw = str(preset.get("raw_content_item", ""))
+    location = xml_attr(raw, "location") or str(preset.get("station_id", ""))
+    return location.rstrip("/").split("/")[-1].split("?", 1)[0].strip()
+
+
+def resolve_siriusxm_station_alias(store: Store, station_id: str) -> str:
+    return store.resolve_station_alias("SIRIUSXM", station_id.split("?", 1)[0])
 
 
 def handle_migrate(req: SixBackHandler, device_id: str) -> None:
@@ -643,6 +676,8 @@ def handle_siriusxm_availability(req: SixBackHandler) -> None:
 
 
 def handle_siriusxm_station(req: SixBackHandler, station_id: str) -> None:
+    requested_station_id = station_id
+    station_id = resolve_siriusxm_station_alias(req.server.store, station_id)
     metadata = {}
     channel = req.server.store.get_siriusxm_channel(station_id)
     if req.server.siriusxm.credentials.configured:
@@ -650,13 +685,15 @@ def handle_siriusxm_station(req: SixBackHandler, station_id: str) -> None:
             metadata = req.server.siriusxm.now_playing(station_id, channel)
         except Exception as exc:
             message = sanitize_siriusxm_error(str(exc), req.server.siriusxm.credentials)
-            capture_cloud_response(req, "siriusxm", f"resolver metadata failed station={station_id}: {message}")
+            capture_cloud_response(req, "siriusxm", f"resolver metadata failed station={requested_station_id}->{station_id}: {message}")
     body = siriusxm_station(req.server.store, station_id, req.server.public_base, metadata)
     capture_cloud_response(req, "siriusxm", body.decode("utf-8", "replace"))
     req.send_bytes(body, content_type="application/json")
 
 
 def handle_siriusxm_now_playing(req: SixBackHandler, station_id: str) -> None:
+    requested_station_id = station_id
+    station_id = resolve_siriusxm_station_alias(req.server.store, station_id)
     metadata = {}
     channel = req.server.store.get_siriusxm_channel(station_id)
     if req.server.siriusxm.credentials.configured:
@@ -664,13 +701,14 @@ def handle_siriusxm_now_playing(req: SixBackHandler, station_id: str) -> None:
             metadata = req.server.siriusxm.now_playing(station_id, channel)
         except Exception as exc:
             message = sanitize_siriusxm_error(str(exc), req.server.siriusxm.credentials)
-            capture_cloud_response(req, "siriusxm", f"now-playing metadata failed station={station_id}: {message}")
+            capture_cloud_response(req, "siriusxm", f"now-playing metadata failed station={requested_station_id}->{station_id}: {message}")
     body = siriusxm_now_playing(req.server.store, station_id, metadata)
     capture_cloud_response(req, "siriusxm", body.decode("utf-8", "replace"))
     req.send_bytes(body, content_type="application/json")
 
 
 def handle_siriusxm_proxy_playlist(req: SixBackHandler, station_id: str) -> None:
+    station_id = resolve_siriusxm_station_alias(req.server.store, station_id)
     try:
         stream_url = resolve_siriusxm_stream_url(req.server.store, req.server.siriusxm, station_id)
     except SiriusXmNotConfigured:
