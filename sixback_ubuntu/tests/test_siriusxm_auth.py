@@ -31,6 +31,7 @@ from sixback_ubuntu.sixback_ubuntu.siriusxm import (
 )
 from sixback_ubuntu.sixback_ubuntu.server import (
     ADMIN_HTML,
+    SixBackServer,
     build_siriusxm_display_experiment_content_item,
     build_siriusxm_content_item,
     rewrite_siriusxm_preset_content_item,
@@ -1197,6 +1198,19 @@ class SiriusXmAuthTests(unittest.TestCase):
         self.assertEqual(payload["nowPlaying"]["source"], "SIRIUSXM_EVEREST")
         self.assertEqual(payload["nowPlaying"]["track"]["text"], "Just Like Heaven")
         self.assertEqual(payload["contentItem"]["source"], "SIRIUSXM_EVEREST")
+
+    def test_siriusxm_display_experiment_route_accepts_adapter_relative_path(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Store(os.path.join(tmp, "state.sqlite3"))
+            server = SixBackServer(("127.0.0.1", 0), store, "http://ubuntu.example:8000")
+            try:
+                path = "/core02/svc-bmx-adapter-siriusxm-everest-eco1/prod/live-adapter/experiments/siriusxm/display/playback/station/big80s"
+                matched = any(method == "GET" and pattern.fullmatch(path) for method, pattern, _handler in server.routes)
+            finally:
+                server.server_close()
+                store.conn.close()
+
+        self.assertTrue(matched)
 
     def test_siriusxm_now_playing_payload_uses_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
