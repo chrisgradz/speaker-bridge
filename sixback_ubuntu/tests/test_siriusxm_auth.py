@@ -926,12 +926,15 @@ class SiriusXmAuthTests(unittest.TestCase):
                 store.conn.close()
 
         payload = json.loads(body)
-        self.assertEqual(payload["id"], "s17947")
+        self.assertNotIn("id", payload)
         self.assertEqual(payload["name"], "80s on 8")
         self.assertNotIn("url", payload)
         self.assertEqual(payload["audio"]["streamUrl"], "http://ubuntu.example:8000/siriusxm/proxy/big80s/playlist.m3u8")
         self.assertEqual(payload["_links"]["bmx_nowplaying"]["href"], "/v1/now-playing/station/big80s")
+        self.assertEqual(payload["nowPlaying"]["stationName"]["text"], "80s on 8")
+        self.assertEqual(payload["nowPlaying"]["track"]["text"], "80s on 8")
         self.assertEqual(payload["_meta"]["targetSource"], "SIRIUSXM")
+        self.assertNotIn("s17947", json.dumps(payload))
 
     def test_admin_ui_exposes_siriusxm_channel_picker(self) -> None:
         self.assertIn("siriusChannelSearch", ADMIN_HTML)

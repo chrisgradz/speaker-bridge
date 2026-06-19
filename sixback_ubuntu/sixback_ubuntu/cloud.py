@@ -163,8 +163,20 @@ def tunein_station(station_id: str, base_url: str) -> bytes:
 
 
 def tunein_siriusxm_alias_station(store: Store, old_station_id: str, station_id: str, base_url: str) -> bytes:
-    payload = json.loads(siriusxm_station(store, station_id, base_url).decode("utf-8"))
-    payload["id"] = old_station_id
+    preset = store.find_preset_by_source_station("SIRIUSXM", station_id)
+    channel = store.get_siriusxm_channel(station_id)
+    name = channel.get("name") or (preset.get("name") if preset else station_id)
+    image = preset.get("image_url") if preset else ""
+    metadata = {
+        "stationId": station_id,
+        "stationName": name or station_id,
+        "channelName": name or station_id,
+        "trackName": name or station_id,
+        "artistName": "SiriusXM",
+        "imageUrl": image or "",
+        "containerArt": image or "",
+    }
+    payload = json.loads(siriusxm_station(store, station_id, base_url, metadata).decode("utf-8"))
     payload.setdefault("_meta", {})
     payload["_meta"].update(
         {
