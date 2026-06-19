@@ -135,6 +135,7 @@ class SixBackServer(ThreadingHTTPServer):
         self.route("DELETE", r"/api/speakers/(?P<device_id>[^/]+)/presets/(?P<slot>[1-6])", handle_delete_preset)
         self.route("POST", r"/api/speakers/(?P<device_id>[^/]+)/presets/(?P<slot>[1-6])/copy", handle_copy_preset)
         self.route("GET", r"/api/siriusxm/channels", handle_siriusxm_channels_list)
+        self.route("GET", r"/api/siriusxm/catalog", handle_siriusxm_catalog)
         self.route("GET", r"/api/siriusxm/session", handle_siriusxm_session)
         self.route("POST", r"/api/siriusxm/session/login", handle_siriusxm_session_login)
         self.route("GET", r"/api/siriusxm/channels/(?P<station_id>[^/]+)", handle_siriusxm_channel_get)
@@ -255,18 +256,9 @@ def handle_put_preset(req: SixBackHandler, device_id: str, slot: str) -> None:
         return
     body = req.read_json()
     try:
-        preset = normalize_admin_preset(body, int(slot))
+        preset = prepare_admin_preset(req.server.store, device_id, body, int(slot))
     except ValueError as exc:
         req.send_json({"error": "invalid_preset", "message": str(exc)}, 400)
-        return
-    if preset["source"] == "SIRIUSXM" and not is_preserved_siriusxm(preset):
-        req.send_json(
-            {
-                "error": "unsupported_source",
-                "message": "SiriusXM presets need authenticated SiriusXM/Bose adapter support, which this MVP does not implement. Imported opaque SiriusXM presets may be preserved, but new SiriusXM presets cannot be created yet.",
-            },
-            501,
-        )
         return
     saved = req.server.store.set_preset(device_id, {"device_id": device_id, **preset})
     req.send_json({"device_id": device_id, "preset": saved})
@@ -328,9 +320,73 @@ def normalize_admin_preset(body: Json, slot: int) -> Json:
     }
 
 
+def prepare_admin_preset(store: Store, device_id: str, body: Json, slot: int) -> Json:
+    preset = normalize_admin_preset(body, slot)
+    if preset["source"] != "SIRIUSXM" or is_preserved_siriusxm(preset):
+        return preset
+    if not preset["station_id"]:
+        raise ValueError("station_id is required for SiriusXM presets")
+    existing_channel = store.get_siriusxm_channel(preset["station_id"])
+    entity_url = str(body.get("entity_url", "")).strip() or str(existing_channel.get("entity_url", ""))
+    store.upsert_siriusxm_channel(
+        preset["station_id"],
+        {
+            "name": preset["name"],
+            "entity_url": entity_url,
+            "stream_url": existing_channel.get("stream_url", ""),
+        },
+    )
+    source_account = first_siriusxm_source_account(store, device_id)
+    preset["raw_content_item"] = build_siriusxm_content_item(
+        preset["station_id"],
+        preset["name"],
+        preset.get("image_url", ""),
+        source_account,
+    )
+    return preset
+
+
 def is_preserved_siriusxm(preset: Json) -> bool:
     raw = str(preset.get("raw_content_item", ""))
     return "SIRIUSXM_EVEREST" in raw and "<ContentItem" in raw
+
+
+def first_siriusxm_source_account(store: Store, device_id: str) -> str:
+    for preset in store.preset_slots_for_speaker(device_id):
+        raw = str(preset.get("raw_content_item", ""))
+        source_account = xml_attr(raw, "sourceAccount")
+        if source_account:
+            return source_account
+    accounts = store.siriusxm_source_accounts()
+    if accounts:
+        return str(accounts[0].get("source_account", ""))
+    return ""
+
+
+def build_siriusxm_content_item(station_id: str, name: str, image_url: str = "", source_account: str = "") -> str:
+    location = f"/playback/station/{escape(station_id)}?preset_play=True"
+    item = (
+        f'<ContentItem source="SIRIUSXM_EVEREST" type="stationurl" location="{location}" '
+        f'sourceAccount="{escape(source_account)}" isPresetable="true">'
+        f"<itemName>{escape(name)}</itemName>"
+    )
+    if image_url:
+        item += f"<containerArt>{escape(image_url)}</containerArt>"
+    return item + "</ContentItem>"
+
+
+def xml_attr(text: str, name: str) -> str:
+    match = re.search(rf'{re.escape(name)}=(?:"([^"]*)"|\'([^\']*)\')', text, re.I)
+    if not match:
+        return ""
+    value = match.group(1) if match.group(1) is not None else match.group(2)
+    return (
+        value.replace("&amp;", "&")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", '"')
+        .replace("&apos;", "'")
+    )
 
 
 def handle_migrate(req: SixBackHandler, device_id: str) -> None:
@@ -347,6 +403,17 @@ def handle_migrate(req: SixBackHandler, device_id: str) -> None:
 
 def handle_siriusxm_channels_list(req: SixBackHandler) -> None:
     req.send_json({"channels": req.server.store.list_siriusxm_channels()})
+
+
+def handle_siriusxm_catalog(req: SixBackHandler) -> None:
+    try:
+        channels = [normalize_siriusxm_catalog_channel(channel) for channel in req.server.siriusxm.get_channels()]
+    except Exception as exc:
+        message = sanitize_siriusxm_error(str(exc), req.server.siriusxm.credentials)
+        req.send_json({"error": "siriusxm_catalog_failed", "message": message}, 502)
+        return
+    channels = [channel for channel in channels if channel.get("station_id")]
+    req.send_json({"channels": channels, "session": req.server.siriusxm.status()})
 
 
 def handle_siriusxm_session(req: SixBackHandler) -> None:
@@ -450,6 +517,52 @@ def normalize_siriusxm_channel(body: Json) -> Json:
         if not (stream_url.startswith("http://") or stream_url.startswith("https://")):
             raise ValueError("stream_url must start with http:// or https://")
     return {"name": name, "entity_url": entity_url, "stream_url": stream_url}
+
+
+def normalize_siriusxm_catalog_channel(channel: Json) -> Json:
+    station_id = str(
+        channel.get("channelId")
+        or channel.get("stationId")
+        or channel.get("channelGuid")
+        or channel.get("guid")
+        or ""
+    ).strip()
+    guid = str(
+        channel.get("channelGuid")
+        or channel.get("assetGUID")
+        or channel.get("guid")
+        or channel.get("entityGuid")
+        or ""
+    ).strip()
+    name = str(channel.get("channelName") or channel.get("name") or station_id).strip()
+    number = str(channel.get("channelNumberCanonical") or channel.get("channelNumber") or "").strip()
+    image_url = first_siriusxm_image_url(channel)
+    return {
+        "station_id": station_id,
+        "name": name,
+        "number": number,
+        "entity_url": f"https://www.siriusxm.com/player/channel-linear/entity/{guid}" if guid else "",
+        "image_url": image_url,
+    }
+
+
+def first_siriusxm_image_url(value: Any) -> str:
+    if isinstance(value, dict):
+        url = value.get("url")
+        if isinstance(url, str) and url:
+            if url.startswith("http://") or url.startswith("https://"):
+                return url
+            return f"http://pri.art.prod.streaming.siriusxm.com/{url.lstrip('/')}"
+        for child in value.values():
+            found = first_siriusxm_image_url(child)
+            if found:
+                return found
+    if isinstance(value, list):
+        for child in value:
+            found = first_siriusxm_image_url(child)
+            if found:
+                return found
+    return ""
 
 
 def resolve_siriusxm_stream_url(store: Store, session: SiriusXmSession, station_id: str, force: bool = False) -> str:
@@ -1230,7 +1343,12 @@ ADMIN_HTML = """<!doctype html>
       <div class="toolbar">
         <button class="secondary" id="refreshSiriusStatus">Status</button>
         <button class="secondary" id="loginSirius">Login</button>
+        <button class="secondary" id="loadSiriusCatalog">Load Channels</button>
       </div>
+      <label class="wide">Channel Search
+        <input id="siriusChannelSearch" placeholder="Search SiriusXM channels">
+      </label>
+      <div class="speaker-list" id="siriusChannelList"></div>
     </section>
     <section>
       <h2 id="selectedTitle">Presets</h2>
@@ -1244,7 +1362,7 @@ ADMIN_HTML = """<!doctype html>
     </section>
   </main>
   <script>
-    const state = { speakers: [], selected: null, presets: [], sirius: null };
+    const state = { speakers: [], selected: null, presets: [], sirius: null, siriusChannels: [] };
     const $ = (id) => document.getElementById(id);
 
     async function api(path, options = {}) {
@@ -1354,16 +1472,21 @@ ADMIN_HTML = """<!doctype html>
             <label class="wide tunein">TuneIn Station ID
               <input data-field="station_id" value="${escapeAttr(preset.station_id || '')}">
             </label>
+            <label class="wide sirius">SiriusXM Channel
+              <select data-role="sirius-picker"></select>
+            </label>
             <label class="wide stream">Stream URL
               <input data-field="stream_url" value="${escapeAttr(preset.stream_url || '')}">
             </label>
             <label class="wide">Image URL
               <input data-field="image_url" value="${escapeAttr(preset.image_url || '')}">
             </label>
+            <input data-field="entity_url" type="hidden" value="">
             <textarea data-field="raw_content_item" hidden>${escapeHtml(preset.raw_content_item || '')}</textarea>
           </div>
           <div class="toolbar">
             <button data-action="save">Save</button>
+            <button class="secondary" data-action="pick-sirius">Use Channel</button>
             <button class="secondary" data-action="refresh-sirius">Refresh SiriusXM</button>
             <button class="danger" data-action="clear">Clear</button>
           </div>
@@ -1380,9 +1503,11 @@ ADMIN_HTML = """<!doctype html>
           preset.source === 'LOCAL_INTERNET_RADIO' ? 'LOCAL_INTERNET_RADIO' :
           preset.source === 'SIRIUSXM' ? 'SIRIUSXM' : 'TUNEIN';
         populateCopyOptions(card);
+        populateSiriusPicker(card);
         syncSourceFields(card);
         card.querySelector('[data-field="source"]').onchange = () => syncSourceFields(card);
         card.querySelector('[data-action="save"]').onclick = () => savePreset(card);
+        card.querySelector('[data-action="pick-sirius"]').onclick = () => pickSiriusChannel(card);
         card.querySelector('[data-action="refresh-sirius"]').onclick = () => refreshSiriusPreset(card);
         card.querySelector('[data-action="clear"]').onclick = () => clearPreset(card);
         card.querySelector('[data-action="copy"]').onclick = () => copyPreset(card);
@@ -1393,19 +1518,104 @@ ADMIN_HTML = """<!doctype html>
       const source = card.querySelector('[data-field="source"]').value;
       const raw = card.querySelector('[data-field="raw_content_item"]').value;
       card.querySelector('.tunein').style.display = source === 'TUNEIN' ? 'grid' : 'none';
+      card.querySelector('.sirius').style.display = source === 'SIRIUSXM' ? 'grid' : 'none';
       card.querySelector('.stream').style.display = source === 'LOCAL_INTERNET_RADIO' ? 'grid' : 'none';
+      card.querySelector('[data-action="pick-sirius"]').style.display = source === 'SIRIUSXM' ? 'inline-flex' : 'none';
       card.querySelector('[data-action="refresh-sirius"]').style.display = source === 'SIRIUSXM' ? 'inline-flex' : 'none';
       const msg = card.querySelector('[data-role="card-status"]');
       if (source === 'SIRIUSXM' && raw.includes('SIRIUSXM_EVEREST')) {
         msg.textContent = 'Imported SiriusXM preset preserved from the speaker. You can copy it to another slot.';
         msg.className = 'status ok';
       } else if (source === 'SIRIUSXM') {
-        msg.textContent = 'New SiriusXM presets require authenticated adapter support and cannot be created by this MVP.';
-        msg.className = 'status warn';
+        msg.textContent = state.siriusChannels.length
+          ? 'Choose a channel, use it, then save the preset.'
+          : 'Load SiriusXM channels, then choose one and save the preset.';
+        msg.className = 'status';
       } else {
         msg.textContent = '';
         msg.className = 'status';
       }
+    }
+
+    async function loadSiriusCatalog() {
+      const data = await api('/api/siriusxm/catalog');
+      state.siriusChannels = (data.channels || []).sort(compareSiriusChannels);
+      if (data.session) state.sirius = data.session;
+      renderSiriusStatus();
+      renderSiriusCatalog();
+      document.querySelectorAll('.preset-card').forEach((card) => {
+        populateSiriusPicker(card);
+        syncSourceFields(card);
+      });
+      setStatus(`Loaded ${state.siriusChannels.length} SiriusXM channel(s)`, 'ok');
+    }
+
+    function compareSiriusChannels(a, b) {
+      const an = Number(a.number || 0);
+      const bn = Number(b.number || 0);
+      if (an && bn && an !== bn) return an - bn;
+      return String(a.name || a.station_id).localeCompare(String(b.name || b.station_id));
+    }
+
+    function renderSiriusCatalog() {
+      const list = $('siriusChannelList');
+      const query = $('siriusChannelSearch').value.trim().toLowerCase();
+      const channels = state.siriusChannels.filter((channel) => {
+        const haystack = `${channel.number || ''} ${channel.name || ''} ${channel.station_id || ''}`.toLowerCase();
+        return !query || haystack.includes(query);
+      }).slice(0, 60);
+      if (!state.siriusChannels.length) {
+        list.innerHTML = '<div class="meta">Load channels to browse SiriusXM.</div>';
+        return;
+      }
+      if (!channels.length) {
+        list.innerHTML = '<div class="meta">No matching channels.</div>';
+        return;
+      }
+      list.innerHTML = channels.map((channel) => {
+        const number = channel.number ? `${escapeHtml(channel.number)} - ` : '';
+        return `<div class="speaker-button"><strong>${number}${escapeHtml(channel.name || channel.station_id)}</strong><div class="meta">${escapeHtml(channel.station_id || '')}</div></div>`;
+      }).join('');
+    }
+
+    function populateSiriusPicker(card) {
+      const picker = card.querySelector('[data-role="sirius-picker"]');
+      if (!picker) return;
+      const current = card.querySelector('[data-field="station_id"]').value.trim();
+      picker.innerHTML = '<option value="">Select channel</option>';
+      for (const channel of state.siriusChannels) {
+        const option = document.createElement('option');
+        option.value = channel.station_id || '';
+        option.textContent = `${channel.number ? `${channel.number} - ` : ''}${channel.name || channel.station_id}`;
+        option.dataset.name = channel.name || '';
+        option.dataset.entityUrl = channel.entity_url || '';
+        option.dataset.imageUrl = channel.image_url || '';
+        picker.appendChild(option);
+      }
+      if (current && [...picker.options].some((option) => option.value === current)) {
+        picker.value = current;
+      }
+    }
+
+    function pickSiriusChannel(card) {
+      const picker = card.querySelector('[data-role="sirius-picker"]');
+      const option = picker.selectedOptions[0];
+      const status = card.querySelector('[data-role="card-status"]');
+      if (!option || !option.value) {
+        status.textContent = 'Select a SiriusXM channel first';
+        status.className = 'status error';
+        return;
+      }
+      card.querySelector('[data-field="source"]').value = 'SIRIUSXM';
+      card.querySelector('[data-field="station_id"]').value = option.value;
+      card.querySelector('[data-field="name"]').value = option.dataset.name || option.textContent;
+      card.querySelector('[data-field="image_url"]').value = option.dataset.imageUrl || '';
+      card.querySelector('[data-field="entity_url"]').value = option.dataset.entityUrl || '';
+      card.querySelector('[data-field="stream_url"]').value = '';
+      card.querySelector('[data-field="raw_content_item"]').value = '';
+      syncSourceFields(card);
+      status.textContent = 'Channel ready; save this preset to assign it.';
+      status.className = 'status ok';
     }
 
     function populateCopyOptions(card) {
@@ -1499,6 +1709,8 @@ ADMIN_HTML = """<!doctype html>
     $('refreshSpeakers').onclick = () => loadSpeakers().catch((err) => setStatus(err.message, 'error'));
     $('reloadPresets').onclick = () => loadPresets().catch((err) => setStatus(err.message, 'error'));
     $('refreshSiriusStatus').onclick = () => loadSiriusStatus().catch((err) => setStatus(err.message, 'error'));
+    $('loadSiriusCatalog').onclick = () => loadSiriusCatalog().catch((err) => setStatus(err.message, 'error'));
+    $('siriusChannelSearch').oninput = renderSiriusCatalog;
     $('loginSirius').onclick = async () => {
       try {
         const data = await api('/api/siriusxm/session/login', { method: 'POST', body: '{}' });

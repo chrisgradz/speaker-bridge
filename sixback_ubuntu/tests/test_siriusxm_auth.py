@@ -22,10 +22,14 @@ from sixback_ubuntu.sixback_ubuntu.siriusxm import (
     should_refresh_stream,
 )
 from sixback_ubuntu.sixback_ubuntu.server import (
+    ADMIN_HTML,
     handle_siriusxm_now_playing_debug,
+    normalize_siriusxm_catalog_channel,
+    prepare_admin_preset,
     resolve_siriusxm_stream_url,
     sanitize_siriusxm_error,
 )
+from sixback_ubuntu.sixback_ubuntu.speaker import preset_to_xml
 
 
 class SiriusXmAuthTests(unittest.TestCase):
@@ -633,6 +637,109 @@ class SiriusXmAuthTests(unittest.TestCase):
 
         self.assertIn("http://ubuntu.example:8000/siriusxm/proxy/firstwave/playlist.m3u8", body)
         self.assertNotIn("/siriusxm/needs-auth/firstwave", body)
+
+    def test_normalize_siriusxm_catalog_channel_for_admin_picker(self) -> None:
+        normalized = normalize_siriusxm_catalog_channel(
+            {
+                "channelId": "firstwave",
+                "channelGuid": "65f04311-3581-256c-97b9-279838d6ff5e",
+                "channelName": "1st Wave",
+                "channelNumber": 33,
+                "images": {"tile": {"aspect_1x1": {"preferredImage": {"url": "chan.png"}}}},
+            }
+        )
+
+        self.assertEqual(normalized["station_id"], "firstwave")
+        self.assertEqual(normalized["name"], "1st Wave")
+        self.assertEqual(normalized["number"], "33")
+        self.assertEqual(
+            normalized["entity_url"],
+            "https://www.siriusxm.com/player/channel-linear/entity/65f04311-3581-256c-97b9-279838d6ff5e",
+        )
+        self.assertEqual(normalized["image_url"], "http://pri.art.prod.streaming.siriusxm.com/chan.png")
+
+    def test_prepare_admin_preset_generates_siriusxm_content_item(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Store(os.path.join(tmp, "state.sqlite3"))
+            raw = (
+                '<ContentItem source="SIRIUSXM_EVEREST" type="stationurl" '
+                'location="/playback/station/firstwave?preset_play=True" '
+                'sourceAccount="source-account-123" isPresetable="true">'
+                "<itemName>1st Wave</itemName></ContentItem>"
+            )
+            try:
+                store.set_preset(
+                    "speaker-1",
+                    {
+                        "device_id": "speaker-1",
+                        "slot": 1,
+                        "source": "SIRIUSXM",
+                        "name": "1st Wave",
+                        "station_id": "firstwave",
+                        "raw_content_item": raw,
+                    },
+                )
+                store.upsert_siriusxm_channel(
+                    "classicvinyl",
+                    {
+                        "name": "Classic Vinyl",
+                        "entity_url": "",
+                        "stream_url": "https://stream.example/classic.m3u8",
+                    },
+                )
+
+                preset = prepare_admin_preset(
+                    store,
+                    "speaker-1",
+                    {
+                        "source": "SIRIUSXM",
+                        "name": "Classic Vinyl",
+                        "station_id": "classicvinyl",
+                        "entity_url": "https://www.siriusxm.com/player/channel-linear/entity/classic-guid",
+                        "image_url": "https://img.example/classic.png",
+                    },
+                    2,
+                )
+                channel = store.get_siriusxm_channel("classicvinyl")
+            finally:
+                store.conn.close()
+
+        self.assertIn('source="SIRIUSXM_EVEREST"', preset["raw_content_item"])
+        self.assertIn('location="/playback/station/classicvinyl?preset_play=True"', preset["raw_content_item"])
+        self.assertIn('sourceAccount="source-account-123"', preset["raw_content_item"])
+        self.assertIn("<itemName>Classic Vinyl</itemName>", preset["raw_content_item"])
+        self.assertIn("<containerArt>https://img.example/classic.png</containerArt>", preset["raw_content_item"])
+        self.assertEqual(channel["name"], "Classic Vinyl")
+        self.assertEqual(
+            channel["entity_url"],
+            "https://www.siriusxm.com/player/channel-linear/entity/classic-guid",
+        )
+        self.assertEqual(channel["stream_url"], "https://stream.example/classic.m3u8")
+
+    def test_generated_siriusxm_preset_renders_as_bose_xml(self) -> None:
+        preset = {
+            "slot": 2,
+            "source": "SIRIUSXM",
+            "name": "Classic Vinyl",
+            "station_id": "classicvinyl",
+            "raw_content_item": (
+                '<ContentItem source="SIRIUSXM_EVEREST" type="stationurl" '
+                'location="/playback/station/classicvinyl?preset_play=True" '
+                'sourceAccount="source-account-123" isPresetable="true">'
+                "<itemName>Classic Vinyl</itemName></ContentItem>"
+            ),
+        }
+
+        xml = preset_to_xml(preset)
+
+        self.assertIn("<sourcename>SIRIUSXM_EVEREST</sourcename>", xml)
+        self.assertIn("<username>source-account-123</username>", xml)
+        self.assertIn('location="/playback/station/classicvinyl?preset_play=True"', xml)
+
+    def test_admin_ui_exposes_siriusxm_channel_picker(self) -> None:
+        self.assertIn("siriusChannelSearch", ADMIN_HTML)
+        self.assertIn("loadSiriusCatalog", ADMIN_HTML)
+        self.assertIn("data-action=\"pick-sirius\"", ADMIN_HTML)
 
     def test_siriusxm_station_uses_longer_buffer_window(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
