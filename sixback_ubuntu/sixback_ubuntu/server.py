@@ -694,7 +694,7 @@ def handle_tunein_station(req: SixBackHandler, station_id: str) -> None:
             req.server.public_base,
         )
     else:
-        body = tunein_station(station_id, req.server.public_base)
+        body = tunein_station(req.server.store, station_id, req.server.public_base)
     req.send_bytes(body, content_type="application/json")
 
 

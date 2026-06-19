@@ -8,12 +8,14 @@ import json
 from io import BytesIO
 from http.cookiejar import Cookie
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from sixback_ubuntu.sixback_ubuntu.db import Store
 from sixback_ubuntu.sixback_ubuntu.cloud import (
     siriusxm_now_playing,
     siriusxm_station,
     tunein_siriusxm_alias_station,
+    tunein_station,
 )
 from sixback_ubuntu.sixback_ubuntu.siriusxm import (
     SiriusXmCredentials,
@@ -859,6 +861,50 @@ class SiriusXmAuthTests(unittest.TestCase):
         xml = store_preset_xml(1, raw)
 
         self.assertEqual(xml, f'<preset id="1">{raw}</preset>')
+
+    def test_generated_tunein_preset_renders_content_item_for_speaker_store(self) -> None:
+        preset = {
+            "slot": 1,
+            "source": "TUNEIN",
+            "name": "The Answer Chicago",
+            "station_id": "s17947",
+            "image_url": "http://example.test/logo.png",
+        }
+
+        xml = preset_to_xml(preset)
+
+        self.assertIn('<ContentItem source="TUNEIN" type="stationurl"', xml)
+        self.assertIn('location="/v1/playback/station/s17947"', xml)
+        self.assertIn("<itemName>The Answer Chicago</itemName>", xml)
+
+    def test_tunein_station_returns_audio_stream_shape(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Store(os.path.join(tmp, "state.sqlite3"))
+            try:
+                store.set_preset(
+                    "speaker-1",
+                    {
+                        "device_id": "speaker-1",
+                        "slot": 1,
+                        "source": "TUNEIN",
+                        "name": "The Answer Chicago",
+                        "station_id": "s17947",
+                        "image_url": "http://example.test/logo.png",
+                    },
+                )
+                with patch(
+                    "sixback_ubuntu.sixback_ubuntu.cloud._resolve_tunein",
+                    return_value={"url": "https://stream.example.test/live.mp3", "media_type": "mp3"},
+                ):
+                    body = tunein_station(store, "s17947", "http://ubuntu.example:8000")
+            finally:
+                store.conn.close()
+
+        payload = json.loads(body)
+        self.assertEqual(payload["name"], "The Answer Chicago")
+        self.assertIn("audio", payload)
+        self.assertEqual(payload["audio"]["streamUrl"], "https://stream.example.test/live.mp3")
+        self.assertEqual(payload["nowPlaying"]["stationName"]["text"], "The Answer Chicago")
 
     def test_siriusxm_preset_overwrite_creates_old_station_alias(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

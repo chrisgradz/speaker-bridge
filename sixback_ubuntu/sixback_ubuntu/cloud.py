@@ -149,15 +149,59 @@ def tunein_token() -> bytes:
     return b'{"access_token":"sixback-local","token_type":"Bearer","expires_in":31536000}'
 
 
-def tunein_station(station_id: str, base_url: str) -> bytes:
+def tunein_station(store: Store, station_id: str, base_url: str) -> bytes:
     resolved = _resolve_tunein(station_id)
+    preset = store.find_preset_by_source_station("TUNEIN", station_id)
+    name = resolved.get("name") or (preset.get("name") if preset else "") or station_id
+    image = resolved.get("image") or (preset.get("image_url") if preset else "") or ""
+    stream_url = resolved.get("url") or f"{base_url}/silence.mp3"
+    has_playlist = resolved.get("media_type", "").lower() in {"hls", "m3u", "m3u8"} or ".m3u8" in stream_url.lower()
     payload = {
         "id": station_id,
-        "name": resolved.get("name") or station_id,
+        "name": name,
         "type": "stationurl",
-        "url": resolved.get("url") or f"{base_url}/silence.mp3",
-        "containerArt": resolved.get("image") or "",
+        "url": stream_url,
+        "streamType": "liveRadio",
+        "audio": {
+            "hasPlaylist": has_playlist,
+            "isRealtime": True,
+            "maxTimeout": 180,
+            "streamUrl": stream_url,
+            "streams": [
+                {
+                    "bufferingTimeout": 120,
+                    "connectingTimeout": 20,
+                    "hasPlaylist": has_playlist,
+                    "isRealtime": True,
+                    "streamUrl": stream_url,
+                }
+            ],
+        },
+        "containerArt": image,
+        "imageUrl": image,
+        "nowPlaying": {
+            "source": "TUNEIN",
+            "playStatus": "PLAY_STATE",
+            "stationName": {"text": name},
+            "track": {"text": name},
+            "artist": {"text": "TuneIn"},
+            "album": {"text": ""},
+            "art": {
+                "artImageStatus": "IMAGE_PRESENT" if image else "SHOW_DEFAULT_IMAGE",
+                "text": image,
+            },
+            "streamTypeField": {"text": "RADIO_STREAMING"},
+            "contentItem": {
+                "source": "TUNEIN",
+                "type": "stationurl",
+                "isPresetable": "true",
+                "location": f"/v1/playback/station/{station_id}",
+                "itemName": {"text": name},
+                "containerArt": image,
+            },
+        },
         "_links": {"bmx_reporting": {"href": f"/v1/report?guide_id={station_id}"}},
+        "_meta": {"resolver": "sixback-ubuntu-tunein", "mediaType": resolved.get("media_type", "")},
     }
     return json.dumps(payload, separators=(",", ":")).encode("utf-8")
 
@@ -315,4 +359,5 @@ def _resolve_tunein(station_id: str) -> dict[str, str]:
         "name": str(item.get("text") or item.get("name") or ""),
         "url": str(item.get("URL") or item.get("url") or ""),
         "image": str(item.get("image") or item.get("logo") or ""),
+        "media_type": str(item.get("media_type") or item.get("mediaType") or ""),
     }
