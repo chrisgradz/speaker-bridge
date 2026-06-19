@@ -370,19 +370,27 @@ def handle_siriusxm_token(req: SixBackHandler) -> None:
     length = int(req.headers.get("Content-Length", "0") or "0")
     if length:
         req.rfile.read(length)
-    req.send_bytes(siriusxm_token(), content_type="application/json")
+    body = siriusxm_token()
+    capture_cloud_response(req, "siriusxm", body.decode("utf-8", "replace"))
+    req.send_bytes(body, content_type="application/json")
 
 
 def handle_siriusxm_availability(req: SixBackHandler) -> None:
-    req.send_bytes(siriusxm_availability(), content_type="application/json")
+    body = siriusxm_availability()
+    capture_cloud_response(req, "siriusxm", body.decode("utf-8", "replace"))
+    req.send_bytes(body, content_type="application/json")
 
 
 def handle_siriusxm_station(req: SixBackHandler, station_id: str) -> None:
-    req.send_bytes(siriusxm_station(req.server.store, station_id, req.server.public_base), content_type="application/json")
+    body = siriusxm_station(req.server.store, station_id, req.server.public_base)
+    capture_cloud_response(req, "siriusxm", body.decode("utf-8", "replace"))
+    req.send_bytes(body, content_type="application/json")
 
 
 def handle_siriusxm_now_playing(req: SixBackHandler, station_id: str) -> None:
-    req.send_bytes(siriusxm_now_playing(req.server.store, station_id), content_type="application/json")
+    body = siriusxm_now_playing(req.server.store, station_id)
+    capture_cloud_response(req, "siriusxm", body.decode("utf-8", "replace"))
+    req.send_bytes(body, content_type="application/json")
 
 
 def handle_siriusxm_needs_auth(req: SixBackHandler, station_id: str) -> None:
@@ -487,6 +495,7 @@ def capture_cloud_response(req: SixBackHandler, account_id: str, body: str) -> N
 def redact_cloud_response(body: str) -> str:
     body = re.sub(r'(sourceAccount=")[^"]*(")', r"\1[redacted]\2", body)
     body = re.sub(r"(<username>)[a-fA-F0-9]{16,}(</username>)", r"\1[redacted]\2", body)
+    body = re.sub(r'("(?:streamUrl|url)"\s*:\s*")[^"]*(")', r"\1[redacted]\2", body)
     return body
 
 
