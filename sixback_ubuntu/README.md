@@ -35,6 +35,23 @@ This removes the local `404` when a preserved SiriusXM preset is pressed. If the
 speaker then requests `/siriusxm/needs-auth/{channel}`, the remaining missing
 piece is authenticated SiriusXM stream URL resolution.
 
+Store SiriusXM channel metadata from the web player:
+
+```bash
+curl -X PUT http://localhost:8000/api/siriusxm/channels/firstwave \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"1st Wave","entity_url":"https://www.siriusxm.com/player/channel-linear/entity/65f04311-3581-256c-97b9-279838d6ff5e"}'
+```
+
+That web player URL is not a direct audio stream. When a real authenticated
+audio URL is available, add it as `stream_url`:
+
+```bash
+curl -X PUT http://localhost:8000/api/siriusxm/channels/firstwave \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"1st Wave","entity_url":"https://www.siriusxm.com/player/channel-linear/entity/65f04311-3581-256c-97b9-279838d6ff5e","stream_url":"https://example.com/authenticated-audio.m3u8"}'
+```
+
 This MVP is derived from the public SixBack protocol work and includes SixBack
 data assets. See `SIXBACK_LICENSE`; noncommercial terms apply to those parts.
 

@@ -33,6 +33,14 @@ CREATE TABLE IF NOT EXISTS presets (
     PRIMARY KEY (device_id, slot),
     FOREIGN KEY (device_id) REFERENCES speakers(device_id) ON DELETE CASCADE
 );
+
+CREATE TABLE IF NOT EXISTS siriusxm_channels (
+    station_id TEXT PRIMARY KEY,
+    name TEXT NOT NULL DEFAULT '',
+    entity_url TEXT NOT NULL DEFAULT '',
+    stream_url TEXT NOT NULL DEFAULT '',
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
 """
 
 
@@ -163,6 +171,40 @@ class Store:
             if raw_slug == station_id:
                 return preset
         return None
+
+    def upsert_siriusxm_channel(self, station_id: str, data: dict[str, Any]) -> dict[str, Any]:
+        self.conn.execute(
+            """
+            INSERT INTO siriusxm_channels(station_id, name, entity_url, stream_url)
+            VALUES(?, ?, ?, ?)
+            ON CONFLICT(station_id) DO UPDATE SET
+                name=excluded.name,
+                entity_url=excluded.entity_url,
+                stream_url=excluded.stream_url,
+                updated_at=CURRENT_TIMESTAMP
+            """,
+            (
+                station_id,
+                str(data.get("name", "")),
+                str(data.get("entity_url", "")),
+                str(data.get("stream_url", "")),
+            ),
+        )
+        self.conn.commit()
+        return self.get_siriusxm_channel(station_id)
+
+    def get_siriusxm_channel(self, station_id: str) -> dict[str, Any]:
+        row = self.conn.execute(
+            "SELECT * FROM siriusxm_channels WHERE station_id=?",
+            (station_id,),
+        ).fetchone()
+        if row:
+            return dict(row)
+        return {"station_id": station_id, "name": "", "entity_url": "", "stream_url": ""}
+
+    def list_siriusxm_channels(self) -> list[dict[str, Any]]:
+        rows = self.conn.execute("SELECT * FROM siriusxm_channels ORDER BY station_id").fetchall()
+        return [dict(row) for row in rows]
 
     def _set_preset_locked(self, device_id: str, preset: dict[str, Any]) -> None:
         self.conn.execute(

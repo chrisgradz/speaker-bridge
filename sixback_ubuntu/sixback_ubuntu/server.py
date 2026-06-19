@@ -111,6 +111,9 @@ class SixBackServer(ThreadingHTTPServer):
         self.route("PUT", r"/api/speakers/(?P<device_id>[^/]+)/presets/(?P<slot>[1-6])", handle_put_preset)
         self.route("DELETE", r"/api/speakers/(?P<device_id>[^/]+)/presets/(?P<slot>[1-6])", handle_delete_preset)
         self.route("POST", r"/api/speakers/(?P<device_id>[^/]+)/presets/(?P<slot>[1-6])/copy", handle_copy_preset)
+        self.route("GET", r"/api/siriusxm/channels", handle_siriusxm_channels_list)
+        self.route("GET", r"/api/siriusxm/channels/(?P<station_id>[^/]+)", handle_siriusxm_channel_get)
+        self.route("PUT", r"/api/siriusxm/channels/(?P<station_id>[^/]+)", handle_siriusxm_channel_put)
         self.route("GET", r"/bmx/registry/v1/services", handle_bmx_services)
         self.route("GET", r"/bmx/registry/v1/servicesAvailability", handle_bmx_services_availability)
         self.route("GET", r"/streaming/sourceproviders", handle_sourceproviders)
@@ -283,6 +286,39 @@ def handle_migrate(req: SixBackHandler, device_id: str) -> None:
     transcript = migrate_speaker(speaker["ip"], base_url)
     req.server.store.set_migrated(device_id, base_url)
     req.send_json({"device_id": device_id, "base_url": base_url, "transcript": transcript})
+
+
+def handle_siriusxm_channels_list(req: SixBackHandler) -> None:
+    req.send_json({"channels": req.server.store.list_siriusxm_channels()})
+
+
+def handle_siriusxm_channel_get(req: SixBackHandler, station_id: str) -> None:
+    req.send_json({"channel": req.server.store.get_siriusxm_channel(station_id)})
+
+
+def handle_siriusxm_channel_put(req: SixBackHandler, station_id: str) -> None:
+    body = req.read_json()
+    try:
+        channel = normalize_siriusxm_channel(body)
+    except ValueError as exc:
+        req.send_json({"error": "invalid_siriusxm_channel", "message": str(exc)}, 400)
+        return
+    saved = req.server.store.upsert_siriusxm_channel(station_id, channel)
+    req.send_json({"channel": saved})
+
+
+def normalize_siriusxm_channel(body: Json) -> Json:
+    name = str(body.get("name", "")).strip()
+    entity_url = str(body.get("entity_url", "")).strip()
+    stream_url = str(body.get("stream_url", "")).strip()
+    if entity_url and not entity_url.startswith("https://www.siriusxm.com/player/"):
+        raise ValueError("entity_url should be the SiriusXM web player URL")
+    if stream_url:
+        if "siriusxm.com/player/" in stream_url:
+            raise ValueError("stream_url must be a direct playable audio URL, not the SiriusXM web player URL")
+        if not (stream_url.startswith("http://") or stream_url.startswith("https://")):
+            raise ValueError("stream_url must start with http:// or https://")
+    return {"name": name, "entity_url": entity_url, "stream_url": stream_url}
 
 
 def handle_bmx_services(req: SixBackHandler) -> None:
