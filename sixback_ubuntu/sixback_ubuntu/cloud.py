@@ -308,6 +308,62 @@ def siriusxm_station(
     return json.dumps(payload, separators=(",", ":")).encode("utf-8")
 
 
+def siriusxm_station_display_experiment(
+    store: Store,
+    station_id: str,
+    base_url: str,
+    metadata: dict[str, str] | None = None,
+) -> bytes:
+    payload = json.loads(siriusxm_station(store, station_id, base_url, metadata).decode("utf-8"))
+    now_playing = json.loads(siriusxm_now_playing(store, station_id, metadata).decode("utf-8"))
+    station_name = str(now_playing.get("stationName") or payload.get("name") or station_id)
+    track = now_playing.get("track") or {"text": str(now_playing.get("trackName") or "")}
+    artist = now_playing.get("artist") or {"text": str(now_playing.get("artistName") or "")}
+    album = now_playing.get("album") or {"text": str(now_playing.get("albumName") or "")}
+    art = now_playing.get("art") or {"artImageStatus": "SHOW_DEFAULT_IMAGE", "text": ""}
+    content_item = {
+        "source": "SIRIUSXM_EVEREST",
+        "type": "stationurl",
+        "isPresetable": "true",
+        "location": f"/playback/station/{station_id}",
+        "itemName": {"text": payload.get("name") or station_name},
+        "containerArt": str(now_playing.get("containerArt") or now_playing.get("imageUrl") or ""),
+    }
+    payload.update(
+        {
+            "source": "SIRIUSXM_EVEREST",
+            "sourceAccount": "",
+            "playStatus": "PLAY_STATE",
+            "stationName": {"text": station_name},
+            "track": track,
+            "artist": artist,
+            "album": album,
+            "art": art,
+            "streamTypeField": {"text": "RADIO_STREAMING"},
+            "contentItem": content_item,
+            "nowPlaying": {
+                "source": "SIRIUSXM_EVEREST",
+                "playStatus": "PLAY_STATE",
+                "stationName": {"text": station_name},
+                "track": track,
+                "artist": artist,
+                "album": album,
+                "art": art,
+                "streamTypeField": {"text": "RADIO_STREAMING"},
+                "contentItem": content_item,
+            },
+        }
+    )
+    payload.setdefault("_meta", {})
+    payload["_meta"].update(
+        {
+            "resolver": "sixback-ubuntu-siriusxm-display-experiment",
+            "experiment": "iheart-like-now-playing-fields",
+        }
+    )
+    return json.dumps(payload, separators=(",", ":")).encode("utf-8")
+
+
 def siriusxm_now_playing(store: Store, station_id: str, metadata: dict[str, str] | None = None) -> bytes:
     preset = store.find_preset_by_source_station("SIRIUSXM", station_id)
     name = preset.get("name") if preset else station_id

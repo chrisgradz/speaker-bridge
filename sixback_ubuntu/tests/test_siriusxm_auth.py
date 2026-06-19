@@ -13,6 +13,7 @@ from unittest.mock import patch
 from sixback_ubuntu.sixback_ubuntu.db import Store
 from sixback_ubuntu.sixback_ubuntu.cloud import (
     siriusxm_now_playing,
+    siriusxm_station_display_experiment,
     siriusxm_station,
     tunein_siriusxm_alias_station,
     tunein_station,
@@ -30,6 +31,9 @@ from sixback_ubuntu.sixback_ubuntu.siriusxm import (
 )
 from sixback_ubuntu.sixback_ubuntu.server import (
     ADMIN_HTML,
+    build_siriusxm_display_experiment_content_item,
+    build_siriusxm_content_item,
+    rewrite_siriusxm_preset_content_item,
     handle_siriusxm_now_playing_debug,
     normalize_siriusxm_catalog_channel,
     prepare_admin_preset,
@@ -832,6 +836,40 @@ class SiriusXmAuthTests(unittest.TestCase):
         )
         self.assertEqual(channel["stream_url"], "https://stream.example/classic.m3u8")
 
+    def test_display_experiment_content_item_points_to_experiment_resolver(self) -> None:
+        raw = build_siriusxm_display_experiment_content_item(
+            "big80s?preset_play=True",
+            "80s on 8",
+            "https://img.example/80s.png",
+            "source-account-123",
+        )
+
+        self.assertIn('source="SIRIUSXM_EVEREST"', raw)
+        self.assertIn('location="/experiments/siriusxm/display/playback/station/big80s?preset_play=True"', raw)
+        self.assertIn('sourceAccount="source-account-123"', raw)
+        self.assertIn("<itemName>80s on 8</itemName>", raw)
+
+    def test_rewrite_siriusxm_preset_content_item_can_toggle_display_experiment(self) -> None:
+        preset = {
+            "source": "SIRIUSXM",
+            "station_id": "big80s?preset_play=True",
+            "name": "80s on 8",
+            "image_url": "https://img.example/80s.png",
+            "raw_content_item": build_siriusxm_content_item(
+                "big80s",
+                "80s on 8",
+                "https://img.example/80s.png",
+                "source-account-123",
+            ),
+        }
+
+        experiment = rewrite_siriusxm_preset_content_item(preset, experiment=True)
+        normal = rewrite_siriusxm_preset_content_item(experiment, experiment=False)
+
+        self.assertIn("/experiments/siriusxm/display/playback/station/big80s", experiment["raw_content_item"])
+        self.assertIn('sourceAccount="source-account-123"', experiment["raw_content_item"])
+        self.assertIn('location="/playback/station/big80s?preset_play=True"', normal["raw_content_item"])
+
     def test_generated_siriusxm_preset_renders_as_bose_xml(self) -> None:
         preset = {
             "slot": 2,
@@ -1128,6 +1166,37 @@ class SiriusXmAuthTests(unittest.TestCase):
         self.assertEqual(payload["nowPlaying"]["album"]["text"], "Kiss Me, Kiss Me, Kiss Me")
         self.assertEqual(payload["nowPlaying"]["stationName"]["text"], "1st Wave")
         self.assertEqual(payload["nowPlaying"]["art"]["text"], "https://img.example/cure.jpg")
+
+    def test_siriusxm_display_experiment_repeats_metadata_in_iheart_like_shape(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Store(os.path.join(tmp, "state.sqlite3"))
+            try:
+                store.upsert_siriusxm_channel("firstwave", {"name": "1st Wave"})
+
+                payload = json.loads(
+                    siriusxm_station_display_experiment(
+                        store,
+                        "firstwave",
+                        "http://ubuntu.example:8000",
+                        {
+                            "stationName": "1st Wave",
+                            "trackName": "Just Like Heaven",
+                            "artistName": "The Cure",
+                            "albumName": "Kiss Me, Kiss Me, Kiss Me",
+                            "imageUrl": "https://img.example/cure.jpg",
+                        },
+                    )
+                )
+            finally:
+                store.conn.close()
+
+        self.assertEqual(payload["_meta"]["resolver"], "sixback-ubuntu-siriusxm-display-experiment")
+        self.assertEqual(payload["stationName"]["text"], "1st Wave")
+        self.assertEqual(payload["track"]["text"], "Just Like Heaven")
+        self.assertEqual(payload["artist"]["text"], "The Cure")
+        self.assertEqual(payload["nowPlaying"]["source"], "SIRIUSXM_EVEREST")
+        self.assertEqual(payload["nowPlaying"]["track"]["text"], "Just Like Heaven")
+        self.assertEqual(payload["contentItem"]["source"], "SIRIUSXM_EVEREST")
 
     def test_siriusxm_now_playing_payload_uses_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
