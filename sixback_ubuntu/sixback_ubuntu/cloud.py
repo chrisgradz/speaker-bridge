@@ -175,7 +175,11 @@ def siriusxm_station(store: Store, station_id: str, base_url: str) -> bytes:
     channel = store.get_siriusxm_channel(station_id)
     name = channel.get("name") or (preset.get("name") if preset else station_id)
     image = preset.get("image_url") if preset else ""
-    stream_url = channel.get("stream_url") or f"{base_url}/siriusxm/needs-auth/{urllib.parse.quote(station_id)}"
+    stream_url = (
+        f"{base_url}/siriusxm/proxy/{urllib.parse.quote(station_id)}/playlist.m3u8"
+        if channel.get("stream_url")
+        else f"{base_url}/siriusxm/needs-auth/{urllib.parse.quote(station_id)}"
+    )
     needs_auth = not bool(channel.get("stream_url"))
     payload = {
         "name": name or station_id,
