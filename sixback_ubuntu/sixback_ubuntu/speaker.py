@@ -75,6 +75,20 @@ def import_presets(ip: str) -> list[dict[str, Any]]:
     return parse_presets_xml(body)
 
 
+def store_preset(ip: str, preset: dict[str, Any]) -> None:
+    raw_content_item = str(preset.get("raw_content_item", "")).strip()
+    if not raw_content_item:
+        raw_content_item = _content_item(preset_to_xml(preset))
+    if not raw_content_item:
+        raise ValueError("preset does not include a ContentItem")
+    body = store_preset_xml(int(preset["slot"]), raw_content_item)
+    _http_post_xml(f"http://{ip}:{BOSE_BMX_PORT}/storePreset", body, timeout=5)
+
+
+def store_preset_xml(slot: int, raw_content_item: str) -> str:
+    return f'<preset id="{slot}">{raw_content_item}</preset>'
+
+
 def select_content_item(ip: str, raw_content_item: str) -> None:
     if not raw_content_item.strip():
         raise ValueError("raw_content_item is required")

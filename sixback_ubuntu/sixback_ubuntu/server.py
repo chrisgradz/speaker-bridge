@@ -37,7 +37,7 @@ from .cloud import (
     tunein_token,
 )
 from .db import Store
-from .speaker import import_presets, migrate_speaker, probe_speaker, select_content_item
+from .speaker import import_presets, migrate_speaker, probe_speaker, select_content_item, store_preset
 from .siriusxm import (
     DEFAULT_ENV_FILE,
     SiriusXmCredentials,
@@ -266,7 +266,8 @@ def handle_put_preset(req: SixBackHandler, device_id: str, slot: str) -> None:
         return
     saved = req.server.store.set_preset(device_id, {"device_id": device_id, **preset})
     remember_siriusxm_station_alias(req.server.store, old_preset, saved)
-    req.send_json({"device_id": device_id, "preset": saved})
+    speaker_store = store_onboard_preset(speaker, saved)
+    req.send_json({"device_id": device_id, "preset": saved, "speaker_store": speaker_store})
 
 
 def handle_copy_preset(req: SixBackHandler, device_id: str, slot: str) -> None:
@@ -405,6 +406,23 @@ def remember_siriusxm_station_alias(store: Store, old_preset: Json, new_preset: 
         preset_station_slug(new_preset),
         new_source,
     )
+
+
+def store_onboard_preset(speaker: Json, preset: Json) -> Json:
+    if str(preset.get("source", "")).upper() == "EMPTY":
+        return {"attempted": False, "ok": False, "message": "empty presets are not stored on the speaker"}
+    ip = str(speaker.get("ip", "")).strip()
+    if not ip:
+        return {"attempted": False, "ok": False, "message": "speaker IP is not known"}
+    slot = preset.get("slot", "")
+    try:
+        store_preset(ip, preset)
+    except Exception as exc:
+        message = f"{type(exc).__name__}: {exc}"
+        print(f"[store-preset] {speaker.get('device_id', '')} slot={slot} failed: {message}", flush=True)
+        return {"attempted": True, "ok": False, "message": message}
+    print(f"[store-preset] {speaker.get('device_id', '')} slot={slot} stored on speaker", flush=True)
+    return {"attempted": True, "ok": True, "message": "stored on speaker"}
 
 
 def speaker_onboard_preset(speaker: Json, slot: int) -> Json | None:
@@ -1748,12 +1766,20 @@ ADMIN_HTML = """<!doctype html>
       const payload = Object.fromEntries([...card.querySelectorAll('[data-field]')].map((el) => [el.dataset.field, el.value.trim()]));
       const status = card.querySelector('[data-role="card-status"]');
       try {
-        await api(`/api/speakers/${encodeURIComponent(speaker.device_id)}/presets/${slot}`, {
+        const result = await api(`/api/speakers/${encodeURIComponent(speaker.device_id)}/presets/${slot}`, {
           method: 'PUT',
           body: JSON.stringify(payload),
         });
-        status.textContent = 'Saved';
-        status.className = 'status ok';
+        if (result.speaker_store && result.speaker_store.attempted && result.speaker_store.ok === false) {
+          status.textContent = `Saved; speaker store failed: ${result.speaker_store.message || 'unknown error'}`;
+          status.className = 'status warn';
+        } else if (result.speaker_store && result.speaker_store.ok) {
+          status.textContent = 'Saved and stored on speaker';
+          status.className = 'status ok';
+        } else {
+          status.textContent = 'Saved';
+          status.className = 'status ok';
+        }
         await loadPresets();
       } catch (err) {
         status.textContent = err.message;

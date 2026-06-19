@@ -37,7 +37,7 @@ from sixback_ubuntu.sixback_ubuntu.server import (
     resolve_siriusxm_station_alias,
     sanitize_siriusxm_error,
 )
-from sixback_ubuntu.sixback_ubuntu.speaker import preset_to_xml
+from sixback_ubuntu.sixback_ubuntu.speaker import preset_to_xml, store_preset_xml
 
 
 class SiriusXmAuthTests(unittest.TestCase):
@@ -847,6 +847,18 @@ class SiriusXmAuthTests(unittest.TestCase):
         self.assertIn("<sourcename>SIRIUSXM_EVEREST</sourcename>", xml)
         self.assertIn("<username>source-account-123</username>", xml)
         self.assertIn('location="/playback/station/classicvinyl?preset_play=True"', xml)
+
+    def test_store_preset_xml_wraps_content_item_for_speaker_store(self) -> None:
+        raw = (
+            '<ContentItem source="SIRIUSXM_EVEREST" type="stationurl" '
+            'location="/playback/station/big80s?preset_play=True" '
+            'sourceAccount="source-account-123" isPresetable="true">'
+            "<itemName>80s on 8</itemName></ContentItem>"
+        )
+
+        xml = store_preset_xml(1, raw)
+
+        self.assertEqual(xml, f'<preset id="1">{raw}</preset>')
 
     def test_siriusxm_preset_overwrite_creates_old_station_alias(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
