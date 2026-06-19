@@ -97,6 +97,22 @@ class SiriusXmAuthTests(unittest.TestCase):
         self.assertEqual(metadata["channelName"], "1st Wave")
         self.assertEqual(metadata["imageUrl"], "https://img.example/cure.jpg")
 
+    def test_extract_now_playing_accepts_http_artwork_urls(self) -> None:
+        payload = {
+            "channelName": "1st Wave",
+            "items": [
+                {
+                    "name": "Just Like Heaven",
+                    "artistName": "The Cure",
+                    "images": {"tile": "http://img.example/cure.png"},
+                }
+            ],
+        }
+
+        metadata = extract_now_playing(payload, "firstwave", "1st Wave")
+
+        self.assertEqual(metadata["imageUrl"], "http://img.example/cure.png")
+
     def test_extract_now_playing_finds_nested_track_items(self) -> None:
         payload = {
             "ModuleListResponse": {
@@ -288,6 +304,98 @@ class SiriusXmAuthTests(unittest.TestCase):
         self.assertEqual(first["trackName"], "Just Like Heaven")
         self.assertEqual(second["artistName"], "The Cure")
         self.assertEqual(sum("tune/now-playing-live" in url for url in requests), 1)
+
+    def test_session_now_playing_prefers_edge_live_update_for_entity_channels(self) -> None:
+        requests = []
+
+        def opener(request):
+            requests.append(request)
+            if "modify/authentication" in request.full_url or "resume" in request.full_url:
+                return b'{"ModuleListResponse":{"status":1}}'
+            if "liveUpdate" in request.full_url:
+                self.assertEqual(request.get_method(), "POST")
+                body = json.loads(request.data.decode("utf-8"))
+                self.assertEqual(body["channelId"], "65f04311-3581-256c-97b9-279838d6ff5e")
+                return json.dumps(
+                    {
+                        "channelName": "1st Wave",
+                        "items": [
+                            {
+                                "name": "Station Liner",
+                                "artistName": "1st Wave",
+                                "isInterstitial": True,
+                            },
+                            {
+                                "name": "Just Like Heaven",
+                                "artistName": "The Cure",
+                                "albumName": "Kiss Me, Kiss Me, Kiss Me",
+                                "isInterstitial": False,
+                            },
+                        ],
+                    }
+                ).encode("utf-8")
+            if "tune/now-playing-live" in request.full_url:
+                raise AssertionError("edge liveUpdate metadata should be used before K2 fallback")
+            raise AssertionError(f"unexpected URL {request.full_url}")
+
+        session = SiriusXmSession(
+            SiriusXmCredentials("listener@example.com", "secret password"),
+            opener=opener,
+        )
+
+        metadata = session.now_playing(
+            "firstwave",
+            {
+                "name": "1st Wave",
+                "entity_url": "https://www.siriusxm.com/player/channel-linear/entity/65f04311-3581-256c-97b9-279838d6ff5e",
+            },
+        )
+
+        self.assertEqual(metadata["trackName"], "Just Like Heaven")
+        self.assertEqual(metadata["artistName"], "The Cure")
+        self.assertTrue(any("liveUpdate" in request.full_url for request in requests))
+
+    def test_session_now_playing_falls_back_to_k2_when_edge_metadata_fails(self) -> None:
+        requests = []
+
+        def opener(request):
+            requests.append(request.full_url)
+            if "modify/authentication" in request.full_url or "resume" in request.full_url:
+                return b'{"ModuleListResponse":{"status":1}}'
+            if "liveUpdate" in request.full_url:
+                raise urllib.error.URLError("edge unavailable")
+            if "tune/now-playing-live" in request.full_url:
+                return json.dumps(
+                    {
+                        "channelName": "1st Wave",
+                        "items": [
+                            {
+                                "name": "Blue Monday",
+                                "artistName": "New Order",
+                                "isInterstitial": False,
+                            }
+                        ],
+                    }
+                ).encode("utf-8")
+            raise AssertionError(f"unexpected URL {request.full_url}")
+
+        session = SiriusXmSession(
+            SiriusXmCredentials("listener@example.com", "secret password"),
+            opener=opener,
+        )
+
+        metadata = session.now_playing(
+            "firstwave",
+            {
+                "name": "1st Wave",
+                "entity_url": "https://www.siriusxm.com/player/channel-linear/entity/65f04311-3581-256c-97b9-279838d6ff5e",
+            },
+        )
+
+        self.assertEqual(metadata["trackName"], "Blue Monday")
+        self.assertEqual(metadata["artistName"], "New Order")
+        self.assertTrue(any("liveUpdate" in url for url in requests))
+        self.assertTrue(any("tune/now-playing-live" in url for url in requests))
 
     def test_server_reuses_cached_authenticated_stream_url(self) -> None:
         class FakeSession:

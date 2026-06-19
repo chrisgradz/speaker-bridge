@@ -15,6 +15,7 @@ from typing import Any, Callable
 
 DEFAULT_ENV_FILE = "/etc/sixback-ubuntu/siriusxm.env"
 K2_REST = "https://player.siriusxm.com/rest/v2/experience/modules/{method}"
+EDGE_LIVE_UPDATE = "https://api.edge-gateway.siriusxm.com/playback/play/v1/liveUpdate"
 LIVE_PRIMARY_HLS = "https://siriusxm-priprodlive.akamaized.net"
 USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -170,7 +171,7 @@ def first_string(payload: Any, key: str) -> str:
 
 def extract_image_url(payload: Any) -> str:
     for value in walk_values(payload):
-        if isinstance(value, str) and value.startswith("https://"):
+        if isinstance(value, str) and value.startswith(("https://", "http://")):
             lowered = value.lower()
             if any(fragment in lowered for fragment in (".jpg", ".jpeg", ".png", "image")):
                 return value
@@ -188,6 +189,23 @@ def walk_values(value: Any) -> list[Any]:
     else:
         found.append(value)
     return found
+
+
+def is_specific_track_metadata(metadata: dict[str, str], station_id: str, station_name: str = "") -> bool:
+    track = (metadata.get("trackName") or "").strip().lower()
+    artist = (metadata.get("artistName") or "").strip().lower()
+    station_values = {
+        station_id.strip().lower(),
+        station_name.strip().lower(),
+        (metadata.get("stationName") or "").strip().lower(),
+        (metadata.get("channelName") or "").strip().lower(),
+    }
+    station_values.discard("")
+    return bool(track and artist and artist != "siriusxm" and track not in station_values)
+
+
+def iso_z(value: dt.datetime) -> str:
+    return value.isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
 class SiriusXmSession:
@@ -250,11 +268,45 @@ class SiriusXmSession:
         if not self.is_session_authenticated():
             self.login()
         channel_data = channel or {}
+        station_name = str(channel_data.get("name", ""))
+        entity_id = extract_entity_id(str(channel_data.get("entity_url", "")))
+        if entity_id:
+            try:
+                data = self._edge_live_update(entity_id)
+                metadata = extract_now_playing(data, station_id, station_name)
+                if is_specific_track_metadata(metadata, station_id, station_name):
+                    self.now_playing_cache[station_id] = (now, metadata)
+                    return metadata
+            except Exception:
+                pass
         channel_info = self.resolve_channel(station_id, channel_data)
         data = self._get_k2("tune/now-playing-live", self._live_params(channel_info, station_id))
-        metadata = extract_now_playing(data, station_id, str(channel_data.get("name", "")))
+        metadata = extract_now_playing(data, station_id, station_name)
         self.now_playing_cache[station_id] = (now, metadata)
         return metadata
+
+    def _edge_live_update(self, entity_id: str) -> Any:
+        return json.loads(self._opener(self._edge_live_update_request(entity_id)).decode("utf-8", "replace"))
+
+    def _edge_live_update_request(self, entity_id: str) -> urllib.request.Request:
+        now = dt.datetime.now(dt.UTC)
+        payload = {
+            "channelId": entity_id,
+            "startTimestamp": iso_z(now - dt.timedelta(minutes=8)),
+            "endTimestamp": iso_z(now + dt.timedelta(minutes=2)),
+        }
+        return urllib.request.Request(
+            EDGE_LIVE_UPDATE,
+            data=json.dumps(payload, separators=(",", ":")).encode("utf-8"),
+            headers={
+                "User-Agent": USER_AGENT,
+                "Accept": "application/json,text/plain,*/*",
+                "Content-Type": "application/json;charset=UTF-8",
+                "Origin": "https://www.siriusxm.com",
+                "Referer": "https://www.siriusxm.com/",
+            },
+            method="POST",
+        )
 
     def _live_params(self, channel_info: dict[str, str], station_id: str) -> dict[str, str]:
         return {
