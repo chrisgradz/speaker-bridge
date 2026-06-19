@@ -366,6 +366,7 @@ class SiriusXmAuthTests(unittest.TestCase):
             headers = {name.lower(): value for name, value in request.header_items()}
             body = json.loads(request.data.decode("utf-8")) if request.data else {}
             if request.full_url.endswith("/device/v2/devices"):
+                self.assertEqual(body["devicePlatform"], "web-desktop")
                 self.assertEqual(body["tenant"], "sxm")
                 self.assertEqual(body["grantVersion"], "v2")
                 return b'{"grant":"device-grant"}'

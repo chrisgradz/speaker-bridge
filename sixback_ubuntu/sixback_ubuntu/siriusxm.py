@@ -422,7 +422,7 @@ class SiriusXmSession:
         device = self._edge_post(
             "device/v2/devices",
             {
-                "devicePlatform": "web",
+                "devicePlatform": "web-desktop",
                 "deviceAttributes": {
                     "browser": {
                         "app": "web-player",
