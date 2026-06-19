@@ -17,6 +17,7 @@ from sixback_ubuntu.sixback_ubuntu.siriusxm import (
     extract_entity_id,
     extract_now_playing,
     extract_stream_url,
+    extract_public_channel_guide,
     load_credentials,
     redact_secret,
     should_refresh_stream,
@@ -256,6 +257,55 @@ class SiriusXmAuthTests(unittest.TestCase):
         self.assertEqual(len(channels), 1)
         self.assertEqual(channels[0]["channelId"], "firstwave")
         self.assertEqual(session.status()["known_channels"], 1)
+
+    def test_public_channel_guide_extracts_channels_from_embedded_page(self) -> None:
+        html = (
+            '<script>{"contentId":"firstwave","displayName":"1st Wave",'
+            '"streamingChannelNumber":33,'
+            '"colorLogo":"/content/dam/sxm-com/channel-logos/Music/x-Rock/1st-Wave/1stWave-4C.svg"}</script>'
+            '<script>{"contentId":"classicvinyl","displayName":"Classic Vinyl",'
+            '"xmChannelNumber":26}</script>'
+        )
+
+        channels = extract_public_channel_guide(html)
+
+        self.assertEqual(
+            channels[0],
+            {
+                "channelId": "firstwave",
+                "channelName": "1st Wave",
+                "channelNumber": 33,
+                "images": {"logo": {"url": "/content/dam/sxm-com/channel-logos/Music/x-Rock/1st-Wave/1stWave-4C.svg"}},
+            },
+        )
+        self.assertEqual(channels[1]["channelId"], "classicvinyl")
+        self.assertEqual(channels[1]["channelNumber"], 26)
+
+    def test_session_get_channels_falls_back_to_public_channel_guide(self) -> None:
+        requests = []
+
+        def opener(request):
+            requests.append(request.full_url)
+            if "get/discovery/channel-listing" in request.full_url:
+                return b'{"ModuleListResponse":{"moduleList":{"modules":[{"moduleResponse":{"message":"no channel objects"}}]}}}'
+            if request.full_url == "https://www.siriusxm.com/channels":
+                return (
+                    b'<script>{"contentId":"firstwave","displayName":"1st Wave",'
+                    b'"streamingChannelNumber":33}</script>'
+                )
+            raise AssertionError(f"unexpected URL {request.full_url}")
+
+        session = SiriusXmSession(
+            SiriusXmCredentials("listener@example.com", "secret password"),
+            opener=opener,
+        )
+        session.cookie_jar.set_cookie(make_cookie("JSESSIONID", "session-123"))
+
+        channels = session.get_channels()
+
+        self.assertEqual(len(channels), 1)
+        self.assertEqual(channels[0]["channelId"], "firstwave")
+        self.assertTrue(any(url == "https://www.siriusxm.com/channels" for url in requests))
 
     def test_session_refresh_uses_k2_resolver_and_variant_playlist(self) -> None:
         requests = []
@@ -697,6 +747,21 @@ class SiriusXmAuthTests(unittest.TestCase):
             "https://www.siriusxm.com/player/channel-linear/entity/65f04311-3581-256c-97b9-279838d6ff5e",
         )
         self.assertEqual(normalized["image_url"], "http://pri.art.prod.streaming.siriusxm.com/chan.png")
+
+    def test_normalize_siriusxm_catalog_channel_uses_public_logo_urls(self) -> None:
+        normalized = normalize_siriusxm_catalog_channel(
+            {
+                "channelId": "firstwave",
+                "channelName": "1st Wave",
+                "channelNumber": 33,
+                "images": {"logo": {"url": "/content/dam/sxm-com/channel-logos/Music/1stWave.svg"}},
+            }
+        )
+
+        self.assertEqual(
+            normalized["image_url"],
+            "https://www.siriusxm.com/content/dam/sxm-com/channel-logos/Music/1stWave.svg",
+        )
 
     def test_prepare_admin_preset_generates_siriusxm_content_item(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -552,6 +552,8 @@ def first_siriusxm_image_url(value: Any) -> str:
         if isinstance(url, str) and url:
             if url.startswith("http://") or url.startswith("https://"):
                 return url
+            if url.startswith("/content/"):
+                return f"https://www.siriusxm.com{url}"
             return f"http://pri.art.prod.streaming.siriusxm.com/{url.lstrip('/')}"
         for child in value.values():
             found = first_siriusxm_image_url(child)

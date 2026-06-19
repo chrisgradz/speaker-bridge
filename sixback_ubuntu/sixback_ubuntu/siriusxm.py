@@ -17,6 +17,7 @@ DEFAULT_ENV_FILE = "/etc/sixback-ubuntu/siriusxm.env"
 K2_REST = "https://player.siriusxm.com/rest/v2/experience/modules/{method}"
 EDGE_BASE = "https://api.edge-gateway.siriusxm.com"
 EDGE_LIVE_UPDATE = "https://api.edge-gateway.siriusxm.com/playback/play/v1/liveUpdate"
+PUBLIC_CHANNEL_GUIDE = "https://www.siriusxm.com/channels"
 LIVE_PRIMARY_HLS = "https://siriusxm-priprodlive.akamaized.net"
 EDGE_APP_VERSION = "7.121.0"
 USER_AGENT = (
@@ -191,6 +192,57 @@ def walk_values(value: Any) -> list[Any]:
     else:
         found.append(value)
     return found
+
+
+def extract_public_channel_guide(html: str) -> list[dict[str, Any]]:
+    channels: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    normalized = html.replace(r"\"", '"')
+    for match in re.finditer(r'"contentId":"(?P<id>(?:[^"\\]|\\.)+?)"', normalized):
+        station_id = _decode_json_fragment(match.group("id")).strip()
+        if not station_id or station_id in seen:
+            continue
+        chunk = normalized[match.start() : match.start() + 8000]
+        name_match = re.search(r'"displayName":"(?P<name>(?:[^"\\]|\\.)+?)"', chunk)
+        if not name_match:
+            continue
+        number = _first_public_channel_number(chunk)
+        if not number:
+            continue
+        logo = _first_public_channel_logo(chunk)
+        channel: dict[str, Any] = {
+            "channelId": station_id,
+            "channelName": _decode_json_fragment(name_match.group("name")).strip(),
+            "channelNumber": number,
+        }
+        if logo:
+            channel["images"] = {"logo": {"url": logo}}
+        channels.append(channel)
+        seen.add(station_id)
+    return channels
+
+
+def _decode_json_fragment(value: str) -> str:
+    return json.loads(f'"{value}"')
+
+
+def _first_public_channel_number(text: str) -> int:
+    for key in ("streamingChannelNumber", "siriusChannelNumber", "xmChannelNumber"):
+        match = re.search(rf'"{key}":(?P<number>\d+)', text)
+        if match:
+            return int(match.group("number"))
+    return 0
+
+
+def _first_public_channel_logo(text: str) -> str:
+    for key in ("colorLogo", "greyscaleLogo", "web_2_0_image"):
+        match = re.search(rf'"{key}"(?P<body>.{{0,300}}?)"url":"(?P<url>(?:[^"\\]|\\.)+?)"', text, re.S)
+        if match:
+            return _decode_json_fragment(match.group("url"))
+        match = re.search(rf'"{key}":"(?P<url>(?:[^"\\]|\\.)+?)"', text, re.S)
+        if match:
+            return _decode_json_fragment(match.group("url"))
+    return ""
 
 
 def is_specific_track_metadata(metadata: dict[str, str], station_id: str, station_name: str = "") -> bool:
@@ -512,16 +564,22 @@ class SiriusXmSession:
     def get_channels(self) -> list[dict[str, Any]]:
         if self.channels:
             return self.channels
+        channels: list[dict[str, Any]] = []
         try:
             data = self._post_k2("get/discovery/channel-listing", self._channel_listing_payload())
-        except Exception:
-            return []
-        channels: list[dict[str, Any]] = []
-        for value in walk_dicts(data):
-            if isinstance(value, dict) and (
-                "channelId" in value or "channelGuid" in value or "channelNumber" in value
-            ):
-                channels.append(value)
+            for value in walk_dicts(data):
+                if isinstance(value, dict) and (
+                    "channelId" in value or "channelGuid" in value or "channelNumber" in value
+                ):
+                    channels.append(value)
+        except Exception as exc:
+            self.last_error = describe_error(exc)
+        if not channels:
+            try:
+                channels = extract_public_channel_guide(self._request_text(PUBLIC_CHANNEL_GUIDE))
+            except Exception as exc:
+                if not self.last_error:
+                    self.last_error = describe_error(exc)
         self.channels = channels
         return channels
 
