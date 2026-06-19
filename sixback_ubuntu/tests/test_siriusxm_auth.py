@@ -37,6 +37,7 @@ from sixback_ubuntu.sixback_ubuntu.server import (
     rewrite_siriusxm_preset_content_item,
     handle_siriusxm_now_playing_debug,
     normalize_siriusxm_catalog_channel,
+    maybe_override_siriusxm_preset_press,
     prepare_admin_preset,
     pressed_preset_slot,
     remember_siriusxm_station_alias,
@@ -1114,6 +1115,56 @@ class SiriusXmAuthTests(unittest.TestCase):
         body = json.dumps({"payload": {"events": [{"type": "power-pressed", "data": {"buttonId": "POWER"}}]}})
 
         self.assertEqual(pressed_preset_slot(body), 0)
+
+    def test_display_experiment_preset_press_does_not_send_select_override(self) -> None:
+        body = json.dumps(
+            {
+                "payload": {
+                    "events": [
+                        {
+                            "type": "preset-pressed",
+                            "data": {"buttonId": "PRESET_1"},
+                        }
+                    ]
+                }
+            }
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Store(os.path.join(tmp, "state.sqlite3"))
+            try:
+                store.upsert_speaker(
+                    {
+                        "device_id": "speaker-1",
+                        "ip": "192.168.10.22",
+                        "name": "STS1",
+                        "model": "",
+                        "firmware": "",
+                        "account_id": "",
+                        "cloud_url": "",
+                        "migrated": 1,
+                    }
+                )
+                store.set_preset(
+                    "speaker-1",
+                    {
+                        "device_id": "speaker-1",
+                        "slot": 1,
+                        "source": "SIRIUSXM",
+                        "name": "80s on 8",
+                        "station_id": "big80s?preset_play=True",
+                        "raw_content_item": build_siriusxm_display_experiment_content_item(
+                            "big80s?preset_play=True",
+                            "80s on 8",
+                        ),
+                    },
+                )
+
+                with patch("sixback_ubuntu.sixback_ubuntu.server.threading.Thread") as thread:
+                    maybe_override_siriusxm_preset_press(store, "speaker-1", body)
+            finally:
+                store.conn.close()
+
+        thread.assert_not_called()
 
     def test_admin_ui_exposes_siriusxm_channel_picker(self) -> None:
         self.assertIn("siriusChannelSearch", ADMIN_HTML)

@@ -1234,12 +1234,19 @@ def maybe_override_siriusxm_preset_press(store: Store, device_id: str, body: str
     preset = store.get_preset(device_id, slot)
     if preset.get("source") != "SIRIUSXM" or not preset.get("raw_content_item"):
         return
+    if is_siriusxm_display_experiment(preset):
+        return
     thread = threading.Thread(
         target=select_siriusxm_preset_content,
         args=(str(speaker.get("ip", "")), str(preset["raw_content_item"]), device_id, slot),
         daemon=True,
     )
     thread.start()
+
+
+def is_siriusxm_display_experiment(preset: Json) -> bool:
+    raw = str(preset.get("raw_content_item", ""))
+    return "/experiments/siriusxm/display/playback/station/" in raw
 
 
 def pressed_preset_slot(body: str) -> int:
