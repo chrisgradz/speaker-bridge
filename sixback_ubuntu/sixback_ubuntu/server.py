@@ -75,11 +75,14 @@ class SixBackHandler(BaseHTTPRequestHandler):
         return json.loads(self.rfile.read(length).decode("utf-8"))
 
     def send_bytes(self, body: bytes, status: int = 200, content_type: str = "application/octet-stream") -> None:
-        self.send_response(status)
-        self.send_header("Content-Type", content_type)
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
+        try:
+            self.send_response(status)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        except (BrokenPipeError, ConnectionResetError):
+            print(f"[client-disconnect] {self.client_address[0]} {self.command} {self.path}")
 
     def send_text(self, body: str, status: int = 200, content_type: str = "text/plain") -> None:
         self.send_bytes(body.encode("utf-8"), status, content_type)
@@ -96,6 +99,7 @@ class SixBackServer(ThreadingHTTPServer):
         super().__init__(addr, SixBackHandler)
         self.store = store
         self.public_base = public_base.rstrip("/")
+        self.siriusxm_proxy_urls: dict[str, str] = {}
         self.routes: list[tuple[str, re.Pattern[str], Callable[..., None]]] = []
         self._register_routes()
 
@@ -132,6 +136,7 @@ class SixBackServer(ThreadingHTTPServer):
         self.route("GET", r"/core02/svc-bmx-adapter-siriusxm-everest-eco1/prod/live-adapter/v1/now-playing/station/(?P<station_id>[^/]+)", handle_siriusxm_now_playing)
         self.route("POST", r"/core02/svc-bmx-adapter-siriusxm-everest-eco1/prod/live-adapter/v1/report", handle_empty)
         self.route("GET", r"/siriusxm/proxy/(?P<station_id>[^/]+)/playlist\.m3u8", handle_siriusxm_proxy_playlist)
+        self.route("GET", r"/siriusxm/proxy/fetch/(?P<token>[^/]+)", handle_siriusxm_proxy_fetch)
         self.route("GET", r"/siriusxm/proxy/fetch", handle_siriusxm_proxy_fetch)
         self.route("GET", r"/siriusxm/needs-auth/(?P<station_id>[^/]+)", handle_siriusxm_needs_auth)
         self.route("POST", r"/v1/scmudc/(?P<device_id>[^/]+)", handle_scmudc)
@@ -409,14 +414,14 @@ def handle_siriusxm_proxy_playlist(req: SixBackHandler, station_id: str) -> None
     except Exception as exc:
         req.send_json({"error": type(exc).__name__, "message": str(exc)}, 502)
         return
-    rewritten = rewrite_hls_playlist(body, stream_url, req.server.public_base)
-    capture_cloud_response(req, "siriusxm", f"proxied playlist station={station_id} bytes={len(rewritten)}")
+    rewritten = rewrite_hls_playlist(body, stream_url, req.server)
+    capture_cloud_response(req, "siriusxm", summarize_hls_playlist(station_id, rewritten))
     req.send_bytes(rewritten.encode("utf-8"), content_type="application/x-mpegURL")
 
 
-def handle_siriusxm_proxy_fetch(req: SixBackHandler) -> None:
+def handle_siriusxm_proxy_fetch(req: SixBackHandler, token: str = "") -> None:
     query = parse_qs(urlparse(req.path).query)
-    target = (query.get("url") or [""])[0]
+    target = req.server.siriusxm_proxy_urls.get(token, "") if token else (query.get("url") or [""])[0]
     if not target.startswith("https://"):
         req.send_json({"error": "invalid_proxy_url"}, 400)
         return
@@ -448,28 +453,39 @@ def fetch_siriusxm_url(url: str) -> bytes:
         return response.read()
 
 
-def rewrite_hls_playlist(body: str, playlist_url: str, public_base: str) -> str:
+def rewrite_hls_playlist(body: str, playlist_url: str, server: SixBackServer) -> str:
     rewritten: list[str] = []
     for line in body.splitlines():
         stripped = line.strip()
         if stripped.startswith("#EXT-X-KEY:"):
-            rewritten.append(rewrite_hls_key_line(line, playlist_url, public_base))
+            rewritten.append(rewrite_hls_key_line(line, playlist_url, server))
         elif stripped and not stripped.startswith("#"):
-            rewritten.append(proxy_url(urljoin(playlist_url, stripped), public_base))
+            rewritten.append(proxy_url(urljoin(playlist_url, stripped), server))
         else:
             rewritten.append(line)
     return "\n".join(rewritten) + "\n"
 
 
-def rewrite_hls_key_line(line: str, playlist_url: str, public_base: str) -> str:
+def rewrite_hls_key_line(line: str, playlist_url: str, server: SixBackServer) -> str:
     def repl(match: re.Match[str]) -> str:
-        return f'URI="{proxy_url(urljoin(playlist_url, match.group(1)), public_base)}"'
+        return f'URI="{proxy_url(urljoin(playlist_url, match.group(1)), server)}"'
 
     return re.sub(r'URI="([^"]+)"', repl, line)
 
 
-def proxy_url(target: str, public_base: str) -> str:
-    return f"{public_base}/siriusxm/proxy/fetch?url={urllib.parse.quote(target, safe='')}"
+def proxy_url(target: str, server: SixBackServer) -> str:
+    token = hashlib.sha256(target.encode("utf-8")).hexdigest()[:24]
+    server.siriusxm_proxy_urls[token] = target
+    return f"{server.public_base}/siriusxm/proxy/fetch/{token}"
+
+
+def summarize_hls_playlist(station_id: str, playlist: str) -> str:
+    lines = playlist.splitlines()
+    media = sum(1 for line in lines if line and not line.startswith("#"))
+    keys = sum(1 for line in lines if line.startswith("#EXT-X-KEY:"))
+    preview = "\n".join(lines[:12])
+    preview = re.sub(r"/siriusxm/proxy/fetch/[A-Fa-f0-9]+", "/siriusxm/proxy/fetch/[token]", preview)
+    return f"proxied playlist station={station_id} lines={len(lines)} keys={keys} media={media}\n{preview}"
 
 
 def handle_siriusxm_needs_auth(req: SixBackHandler, station_id: str) -> None:
