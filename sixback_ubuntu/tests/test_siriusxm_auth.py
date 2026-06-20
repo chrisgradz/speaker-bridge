@@ -19,6 +19,7 @@ from sixback_ubuntu.sixback_ubuntu.cloud import (
     tunein_station,
 )
 from sixback_ubuntu.sixback_ubuntu.siriusxm import (
+    DEFAULT_ENV_FILE,
     SiriusXmCredentials,
     SiriusXmSession,
     extract_entity_id,
@@ -1401,10 +1402,58 @@ class SiriusXmAuthTests(unittest.TestCase):
     def test_admin_ui_exposes_siriusxm_channel_picker(self) -> None:
         self.assertIn("SoundTouch Bridge", ADMIN_HTML)
         self.assertNotIn("<h1>SixBack Ubuntu</h1>", ADMIN_HTML)
+        self.assertIn("Missing /etc/soundtouch-bridge/siriusxm.env", ADMIN_HTML)
+        self.assertNotIn("Missing /etc/sixback-ubuntu/siriusxm.env", ADMIN_HTML)
         self.assertIn("siriusChannelSearch", ADMIN_HTML)
         self.assertIn("loadSiriusCatalog", ADMIN_HTML)
         self.assertIn("data-action=\"pick-sirius\"", ADMIN_HTML)
         self.assertIn("Use Channel", ADMIN_HTML)
+
+    def test_siriusxm_default_env_file_uses_soundtouch_bridge_path(self) -> None:
+        self.assertEqual(DEFAULT_ENV_FILE, "/etc/soundtouch-bridge/siriusxm.env")
+
+    def test_server_prefers_soundtouch_bridge_env_file_override(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Store(os.path.join(tmp, "state.sqlite3"))
+            env_path = os.path.join(tmp, "new.env")
+            with open(env_path, "w", encoding="utf-8") as handle:
+                handle.write("SIRIUSXM_USERNAME='new@example.com'\nSIRIUSXM_PASSWORD='new-pass'\n")
+
+            old_env_path = os.path.join(tmp, "old.env")
+            with open(old_env_path, "w", encoding="utf-8") as handle:
+                handle.write("SIRIUSXM_USERNAME='old@example.com'\nSIRIUSXM_PASSWORD='old-pass'\n")
+
+            with patch.dict(
+                os.environ,
+                {
+                    "SOUNDTOUCH_BRIDGE_SIRIUSXM_ENV_FILE": env_path,
+                    "SIXBACK_SIRIUSXM_ENV_FILE": old_env_path,
+                },
+            ):
+                server = SixBackServer(("127.0.0.1", 0), store, "http://ubuntu.example:8000")
+            try:
+                self.assertEqual(server.siriusxm.credentials.username, "new@example.com")
+                self.assertEqual(server.siriusxm.credentials.password, "new-pass")
+            finally:
+                server.server_close()
+                store.conn.close()
+
+    def test_server_keeps_legacy_siriusxm_env_file_override(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Store(os.path.join(tmp, "state.sqlite3"))
+            env_path = os.path.join(tmp, "legacy.env")
+            with open(env_path, "w", encoding="utf-8") as handle:
+                handle.write("SIRIUSXM_USERNAME='legacy@example.com'\nSIRIUSXM_PASSWORD='legacy-pass'\n")
+
+            with patch.dict(os.environ, {"SIXBACK_SIRIUSXM_ENV_FILE": env_path}, clear=False):
+                with patch.dict(os.environ, {"SOUNDTOUCH_BRIDGE_SIRIUSXM_ENV_FILE": ""}, clear=False):
+                    server = SixBackServer(("127.0.0.1", 0), store, "http://ubuntu.example:8000")
+            try:
+                self.assertEqual(server.siriusxm.credentials.username, "legacy@example.com")
+                self.assertEqual(server.siriusxm.credentials.password, "legacy-pass")
+            finally:
+                server.server_close()
+                store.conn.close()
 
     def test_admin_ui_exposes_tunein_station_picker(self) -> None:
         self.assertIn("tuneinStationSearch", ADMIN_HTML)
@@ -1539,7 +1588,7 @@ class SiriusXmAuthTests(unittest.TestCase):
             finally:
                 store.conn.close()
 
-        self.assertEqual(payload["_meta"]["resolver"], "sixback-ubuntu-siriusxm-display-experiment")
+        self.assertEqual(payload["_meta"]["resolver"], "soundtouch-bridge-siriusxm-display-experiment")
         self.assertEqual(payload["stationName"]["text"], "1st Wave")
         self.assertEqual(payload["track"]["text"], "Just Like Heaven")
         self.assertEqual(payload["artist"]["text"], "The Cure")

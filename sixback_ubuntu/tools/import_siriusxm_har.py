@@ -61,7 +61,7 @@ def main() -> int:
     if entity_url:
         print(f"Entity URL: {entity_url}")
     print("Stored stream_url from HAR without printing it, because it may be session-like.")
-    print("Restart sixback-ubuntu, then press the preset and watch the service logs.")
+    print("Restart soundtouch-bridge, then press the preset and watch the service logs.")
     return 0
 
 

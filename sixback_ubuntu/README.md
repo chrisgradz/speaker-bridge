@@ -1,52 +1,32 @@
-# SixBack Ubuntu MVP
+# SoundTouch Bridge
 
-This is a small Ubuntu-targeted MVP for replacing the core ESP32 SixBack flow
-with a normal Linux service.
+This is a small Ubuntu-targeted service for replacing the core SoundTouch cloud
+calls with a local Linux service.
+
+The Python package is still named `sixback_ubuntu` for compatibility with the
+working prototype. Operationally, the service is SoundTouch Bridge.
 
 It supports:
 
 - manual SoundTouch speaker IP registration,
 - importing existing presets from `http://speaker-ip:8090/presets`,
-- setting and clearing TuneIn or direct-stream preset slots,
-- preserving and copying imported SiriusXM preset slots,
+- setting and clearing TuneIn, SiriusXM, iHeart, and direct-stream presets,
 - authenticating to SiriusXM from a root-owned env file and refreshing HLS
   playlist URLs when presets are pressed,
 - migrating the speaker over Bose diagnostic telnet on port `17000`,
 - serving the key local Bose cloud endpoints on port `8000`,
-- TuneIn station resolution,
 - SQLite persistence.
 
-It does not yet attempt full SixBack parity. Spotify, the polished ESP32 Web UI,
-DLNA browsing, OTA handling, SSDP auto-discovery, and group orchestration are
-outside this MVP.
-
-Imported SiriusXM presets are preserved by replaying the original Bose
-`ContentItem` captured from the speaker, and the admin UI can copy them to
-another slot. When SiriusXM credentials are configured, pressing a SiriusXM
-preset resolves a fresh authenticated HLS playlist URL through the local
-adapter instead of relying on a browser HAR capture.
-
-The MVP also includes a first-pass SiriusXM adapter endpoint for preserved
-presets:
-
-```text
-/core02/svc-bmx-adapter-siriusxm-everest-eco1/prod/live-adapter/playback/station/{channel}
-```
-
-This removes the local `404` when a preserved SiriusXM preset is pressed and
-routes playback through:
-
-```text
-/siriusxm/proxy/{channel}/playlist.m3u8
-```
+It does not attempt full cloud feature parity. Spotify, DLNA browsing, OTA
+handling, SSDP auto-discovery, and group orchestration are outside this service.
 
 ## SiriusXM Login
 
 Create a root-owned env file on the Ubuntu server:
 
 ```bash
-sudo install -d -m 750 -o root -g sixback /etc/sixback-ubuntu
-sudo nano /etc/sixback-ubuntu/siriusxm.env
+sudo install -d -m 750 -o root -g soundtouch /etc/soundtouch-bridge
+sudo nano /etc/soundtouch-bridge/siriusxm.env
 ```
 
 Add:
@@ -59,22 +39,22 @@ SIRIUSXM_PASSWORD='your-siriusxm-password'
 Lock it down:
 
 ```bash
-sudo chown root:sixback /etc/sixback-ubuntu/siriusxm.env
-sudo chmod 640 /etc/sixback-ubuntu/siriusxm.env
+sudo chown root:soundtouch /etc/soundtouch-bridge/siriusxm.env
+sudo chmod 640 /etc/soundtouch-bridge/siriusxm.env
 ```
 
 Add this line to the `[Service]` section of
-`/etc/systemd/system/sixback-ubuntu.service`:
+`/etc/systemd/system/soundtouch-bridge.service`:
 
 ```ini
-EnvironmentFile=-/etc/sixback-ubuntu/siriusxm.env
+EnvironmentFile=-/etc/soundtouch-bridge/siriusxm.env
 ```
 
 Then restart:
 
 ```bash
 sudo systemctl daemon-reload
-sudo systemctl restart sixback-ubuntu
+sudo systemctl restart soundtouch-bridge
 ```
 
 Check redacted auth status. The login call is optional; playback will also log
@@ -84,45 +64,6 @@ in automatically when a SiriusXM preset is pressed.
 curl http://localhost:8000/api/siriusxm/session
 curl -X POST http://localhost:8000/api/siriusxm/session/login
 ```
-
-Store SiriusXM channel metadata from the web player:
-
-```bash
-curl -X PUT http://localhost:8000/api/siriusxm/channels/firstwave \
-  -H 'Content-Type: application/json' \
-  -d '{"name":"1st Wave","entity_url":"https://www.siriusxm.com/player/channel-linear/entity/65f04311-3581-256c-97b9-279838d6ff5e"}'
-```
-
-Refresh a channel stream manually:
-
-```bash
-curl -X POST http://localhost:8000/api/siriusxm/channels/firstwave/refresh
-```
-
-The service also refreshes the channel when the speaker requests playback. If
-credentials are configured, the authenticated resolver is preferred over any old
-stored `stream_url`. After a `sixback-ubuntu` restart, the next SiriusXM preset
-press performs a fresh login automatically, so a manual login curl is only a
-diagnostic check.
-
-When the speaker asks for SiriusXM now-playing data, the service uses the same
-authenticated session to fetch current song metadata and returns track, artist,
-album, and artwork fields when SiriusXM provides them. If metadata lookup fails,
-playback continues and the response falls back to the station name.
-
-The HAR importer remains in `tools/import_siriusxm_har.py` only as legacy
-diagnostic tooling. It is not part of the normal SiriusXM setup path.
-
-Inspect recent speaker event payloads after a failed playback attempt:
-
-```bash
-curl http://localhost:8000/api/speakers/DEVICE_ID/events
-```
-
-The service also prints compact `[scmudc]` event summaries to `journalctl`.
-
-This MVP is derived from the public SixBack protocol work and includes SixBack
-data assets. See `SIXBACK_LICENSE`; noncommercial terms apply to those parts.
 
 ## Run
 
@@ -159,37 +100,6 @@ Import the existing six hardware presets:
 curl -X POST http://localhost:8000/api/speakers/DEVICE_ID/import-presets
 ```
 
-Set a TuneIn preset:
-
-```bash
-curl -X PUT http://localhost:8000/api/speakers/DEVICE_ID/presets/1 \
-  -H 'Content-Type: application/json' \
-  -d '{"source":"TUNEIN","name":"Jazz","station_id":"s12345"}'
-```
-
-Set a direct stream preset:
-
-```bash
-curl -X PUT http://localhost:8000/api/speakers/DEVICE_ID/presets/2 \
-  -H 'Content-Type: application/json' \
-  -d '{"source":"LOCAL_INTERNET_RADIO","name":"Local Stream","stream_url":"https://example.com/stream.mp3"}'
-```
-
-Clear a preset:
-
-```bash
-curl -X DELETE http://localhost:8000/api/speakers/DEVICE_ID/presets/2
-```
-
-Copy an imported preset, including preserved SiriusXM raw metadata, from one
-slot to another:
-
-```bash
-curl -X POST http://localhost:8000/api/speakers/DEVICE_ID/presets/4/copy \
-  -H 'Content-Type: application/json' \
-  -d '{"source_slot":3}'
-```
-
 Migrate the speaker to this Ubuntu service:
 
 ```bash
@@ -203,6 +113,9 @@ After migration, the speaker is rebooted and should call this server for:
 - `/streaming/account/{account_id}/device/{device_id}/presets`
 - `/bmx/tunein/v1/playback/station/{station_id}`
 
+The browser admin UI can then search and save TuneIn, SiriusXM, and iHeart
+stations to preset slots.
+
 ## Useful Checks
 
 ```bash
@@ -213,21 +126,21 @@ curl http://localhost:8000/bmx/registry/v1/services
 
 ## Install As A Service
 
-Create `/etc/systemd/system/sixback-ubuntu.service`:
+Create `/etc/systemd/system/soundtouch-bridge.service`:
 
 ```ini
 [Unit]
-Description=SixBack Ubuntu MVP
+Description=SoundTouch Bridge
 After=network-online.target
 Wants=network-online.target
 
 [Service]
-WorkingDirectory=/opt/sixback_ubuntu
-EnvironmentFile=-/etc/sixback-ubuntu/siriusxm.env
-ExecStart=/usr/bin/python3 -m sixback_ubuntu --host 0.0.0.0 --port 8000 --public-base http://192.168.1.25:8000 --db /var/lib/sixback-ubuntu/state.sqlite3
+WorkingDirectory=/opt/soundtouch-bridge
+EnvironmentFile=-/etc/soundtouch-bridge/siriusxm.env
+ExecStart=/usr/bin/python3 -m sixback_ubuntu --host 0.0.0.0 --port 8000 --public-base http://192.168.1.25:8000 --db /var/lib/soundtouch-bridge/state.sqlite3
 Restart=on-failure
-User=sixback
-Group=sixback
+User=soundtouch
+Group=soundtouch
 
 [Install]
 WantedBy=multi-user.target
@@ -236,9 +149,17 @@ WantedBy=multi-user.target
 Then:
 
 ```bash
-sudo useradd --system --home /var/lib/sixback-ubuntu --create-home sixback
-sudo mkdir -p /opt/sixback_ubuntu
-sudo cp -a . /opt/sixback_ubuntu/
+sudo useradd --system --home /var/lib/soundtouch-bridge --create-home soundtouch 2>/dev/null || true
+sudo install -d -m 755 -o soundtouch -g soundtouch /opt/soundtouch-bridge /var/lib/soundtouch-bridge
+sudo cp -a . /opt/soundtouch-bridge/
+sudo chown -R soundtouch:soundtouch /opt/soundtouch-bridge /var/lib/soundtouch-bridge
 sudo systemctl daemon-reload
-sudo systemctl enable --now sixback-ubuntu
+sudo systemctl enable --now soundtouch-bridge
 ```
+
+## License And Attribution
+
+This service includes original Ubuntu service work and portions derived from or
+informed by public SixBack protocol work. See the root `LICENSE.md` for this
+repository's license language and `SIXBACK_LICENSE` for the SixBack license
+terms that continue to apply to SixBack-derived parts.

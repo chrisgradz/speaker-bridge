@@ -36,7 +36,7 @@ def inspect_icy_stream(
         stream_url,
         headers={
             "Icy-MetaData": "1",
-            "User-Agent": "sixback-ubuntu/0.1",
+            "User-Agent": "soundtouch-bridge/0.1",
         },
     )
     open_url = opener or urllib.request.urlopen

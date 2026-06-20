@@ -16,7 +16,7 @@ BOSE_TS = "2012-09-19T12:43:00.000+00:00"
 
 
 def _http_get(url: str, timeout: float = 5.0) -> bytes:
-    req = urllib.request.Request(url, headers={"User-Agent": "sixback-ubuntu/0.1"})
+    req = urllib.request.Request(url, headers={"User-Agent": "soundtouch-bridge/0.1"})
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         return resp.read()
 
@@ -25,7 +25,7 @@ def _http_post_xml(url: str, body: str, timeout: float = 5.0) -> bytes:
     req = urllib.request.Request(
         url,
         data=body.encode("utf-8"),
-        headers={"User-Agent": "sixback-ubuntu/0.1", "Content-Type": "application/xml"},
+        headers={"User-Agent": "soundtouch-bridge/0.1", "Content-Type": "application/xml"},
         method="POST",
     )
     with urllib.request.urlopen(req, timeout=timeout) as resp:

@@ -13,7 +13,7 @@ from http.cookiejar import CookieJar
 from typing import Any, Callable
 
 
-DEFAULT_ENV_FILE = "/etc/sixback-ubuntu/siriusxm.env"
+DEFAULT_ENV_FILE = "/etc/soundtouch-bridge/siriusxm.env"
 K2_REST = "https://player.siriusxm.com/rest/v2/experience/modules/{method}"
 EDGE_BASE = "https://api.edge-gateway.siriusxm.com"
 EDGE_LIVE_UPDATE = "https://api.edge-gateway.siriusxm.com/playback/play/v1/liveUpdate"

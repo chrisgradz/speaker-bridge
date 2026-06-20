@@ -116,7 +116,12 @@ class SixBackServer(ThreadingHTTPServer):
         super().__init__(addr, SixBackHandler)
         self.store = store
         self.public_base = public_base.rstrip("/")
-        self.siriusxm = SiriusXmSession.from_env(os.environ.get("SIXBACK_SIRIUSXM_ENV_FILE", DEFAULT_ENV_FILE))
+        siriusxm_env_file = (
+            os.environ.get("SOUNDTOUCH_BRIDGE_SIRIUSXM_ENV_FILE")
+            or os.environ.get("SIXBACK_SIRIUSXM_ENV_FILE")
+            or DEFAULT_ENV_FILE
+        )
+        self.siriusxm = SiriusXmSession.from_env(siriusxm_env_file)
         self.siriusxm_proxy_urls: dict[str, str] = {}
         self.siriusxm_fetch_cache: dict[str, tuple[float, bytes]] = {}
         self.routes: list[tuple[str, re.Pattern[str], Callable[..., None]]] = []
@@ -1198,7 +1203,7 @@ def handle_siriusxm_proxy_playlist_impl(req: SixBackHandler, station_id: str, in
                 {
                     "error": "siriusxm_not_configured",
                     "station_id": station_id,
-                    "message": "Create /etc/sixback-ubuntu/siriusxm.env with SIRIUSXM_USERNAME and SIRIUSXM_PASSWORD.",
+                    "message": "Create /etc/soundtouch-bridge/siriusxm.env with SIRIUSXM_USERNAME and SIRIUSXM_PASSWORD.",
                 },
                 501,
             )
@@ -1782,7 +1787,7 @@ def handle_device_add(req: SixBackHandler, account_id: str) -> None:
     req.send_response(201)
     req.send_header("Content-Type", "application/vnd.bose.streaming-v1.2+xml")
     req.send_header("Content-Length", str(len(response)))
-    req.send_header("Credentials", "Bearer sixback-ubuntu-token")
+    req.send_header("Credentials", "Bearer soundtouch-bridge-token")
     if device_id:
         req.send_header(
             "Location",
@@ -2145,7 +2150,7 @@ ADMIN_HTML = """<!doctype html>
       const error = session.last_error ? ` - ${session.last_error}` : '';
       const el = $('siriusStatus');
       if (!session.configured) {
-        el.textContent = 'Missing /etc/sixback-ubuntu/siriusxm.env';
+        el.textContent = 'Missing /etc/soundtouch-bridge/siriusxm.env';
         el.className = 'meta status warn';
       } else if (session.session_authenticated) {
         el.textContent = `Ready${username}${error}`;
@@ -2712,17 +2717,17 @@ def guess_lan_ip() -> str:
 
 
 def main(argv: list[str] | None = None) -> None:
-    parser = argparse.ArgumentParser(description="SixBack Ubuntu MVP")
+    parser = argparse.ArgumentParser(description="SoundTouch Bridge")
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=8000)
-    parser.add_argument("--db", default=str(Path.home() / ".local/share/sixback-ubuntu/state.sqlite3"))
+    parser.add_argument("--db", default=str(Path.home() / ".local/share/soundtouch-bridge/state.sqlite3"))
     parser.add_argument("--public-base", default="")
     args = parser.parse_args(argv)
 
     public_base = args.public_base or f"http://{guess_lan_ip()}:{args.port}"
     store = Store(args.db)
     server = SixBackServer((args.host, args.port), store, public_base)
-    print(f"sixback-ubuntu listening on {args.host}:{args.port}")
+    print(f"soundtouch-bridge listening on {args.host}:{args.port}")
     print(f"speaker cloud base: {public_base}")
     print(f"sqlite state: {args.db}")
     server.serve_forever()

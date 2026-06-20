@@ -73,7 +73,7 @@ def account_full(store: Store, account_id: str) -> bytes:
     devices = "".join(_device_xml(store, speaker) for speaker in speakers)
     xml = (
         '<?xml version="1.0" standalone="yes"?>'
-        f"<account><id>{escape(account_id or 'sixback-local')}</id>"
+        f"<account><id>{escape(account_id or 'soundtouch-bridge-local')}</id>"
         "<accountStatus>ACTIVE</accountStatus><mode>NORMAL</mode>"
         "<preferredLanguage>en-US</preferredLanguage>"
         "<providerSettings/>"
@@ -146,7 +146,7 @@ def _source_xml(source_id: str, name: str, provider_id: str, source_name: str, u
 
 
 def tunein_token() -> bytes:
-    return b'{"access_token":"sixback-local","token_type":"Bearer","expires_in":31536000}'
+    return b'{"access_token":"soundtouch-bridge-local","token_type":"Bearer","expires_in":31536000}'
 
 
 def tunein_station(store: Store, station_id: str, base_url: str) -> bytes:
@@ -201,7 +201,7 @@ def tunein_station(store: Store, station_id: str, base_url: str) -> bytes:
             },
         },
         "_links": {"bmx_reporting": {"href": f"/v1/report?guide_id={station_id}"}},
-        "_meta": {"resolver": "sixback-ubuntu-tunein", "mediaType": resolved.get("media_type", "")},
+        "_meta": {"resolver": "soundtouch-bridge-tunein", "mediaType": resolved.get("media_type", "")},
     }
     return json.dumps(payload, separators=(",", ":")).encode("utf-8")
 
@@ -224,7 +224,7 @@ def tunein_siriusxm_alias_station(store: Store, old_station_id: str, station_id:
     payload.setdefault("_meta", {})
     payload["_meta"].update(
         {
-            "resolver": "sixback-ubuntu-cross-source-alias",
+            "resolver": "soundtouch-bridge-cross-source-alias",
             "source": "TUNEIN",
             "targetSource": "SIRIUSXM",
             "targetStationId": station_id,
@@ -234,7 +234,7 @@ def tunein_siriusxm_alias_station(store: Store, old_station_id: str, station_id:
 
 
 def siriusxm_token() -> bytes:
-    return b'{"access_token":"sixback-siriusxm-preserved","token_type":"Bearer","expires_in":31536000}'
+    return b'{"access_token":"soundtouch-bridge-siriusxm-preserved","token_type":"Bearer","expires_in":31536000}'
 
 
 def siriusxm_availability() -> bytes:
@@ -280,7 +280,7 @@ def siriusxm_station(
             },
         },
         "_meta": {
-            "resolver": "sixback-ubuntu-siriusxm-preserved",
+            "resolver": "soundtouch-bridge-siriusxm-preserved",
             "entityUrl": channel.get("entity_url") or "",
             "requiresAuthStreamResolver": needs_auth,
         },
@@ -362,7 +362,7 @@ def siriusxm_station_display_experiment(
     payload.setdefault("_meta", {})
     payload["_meta"].update(
         {
-            "resolver": "sixback-ubuntu-siriusxm-display-experiment",
+            "resolver": "soundtouch-bridge-siriusxm-display-experiment",
             "experiment": "iheart-like-now-playing-fields",
             "hlsTimedMetadata": "id3-prepend",
         }
