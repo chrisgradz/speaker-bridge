@@ -36,6 +36,7 @@ from sixback_ubuntu.sixback_ubuntu.server import (
     build_siriusxm_content_item,
     rewrite_siriusxm_preset_content_item,
     handle_siriusxm_now_playing_debug,
+    iheart_playlist_body,
     iheart_playlist_url,
     iheart_proxy_stream_url,
     iheart_station_descriptor,
@@ -1164,7 +1165,7 @@ class SiriusXmAuthTests(unittest.TestCase):
     def test_iheart_proxy_stream_url_uses_local_server(self) -> None:
         self.assertEqual(
             iheart_proxy_stream_url("http://ubuntu.example:8000", "8731"),
-            "http://ubuntu.example:8000/iheart/proxy/8731/stream",
+            "http://ubuntu.example:8000/iheart/proxy/8731/stream.aac",
         )
 
     def test_iheart_station_descriptor_points_to_local_playlist(self) -> None:
@@ -1181,6 +1182,12 @@ class SiriusXmAuthTests(unittest.TestCase):
         self.assertEqual(descriptor["audio"]["hasPlaylist"], True)
         self.assertEqual(descriptor["audio"]["isRealtime"], True)
         self.assertEqual(descriptor["audio"]["streamUrl"], "http://ubuntu.example:8000/iheart/proxy/8731/playlist.m3u")
+
+    def test_iheart_playlist_is_simple_url_only_m3u(self) -> None:
+        self.assertEqual(
+            iheart_playlist_body("http://ubuntu.example:8000", "8731"),
+            "http://ubuntu.example:8000/iheart/proxy/8731/stream.aac\n",
+        )
 
     def test_iheart_descriptor_url_is_used_as_preset_location(self) -> None:
         self.assertEqual(
@@ -1434,6 +1441,7 @@ class SiriusXmAuthTests(unittest.TestCase):
                     "/api/iheart/search",
                     "/api/iheart/stations/8731/stream",
                     "/iheart/proxy/8731/stream",
+                    "/iheart/proxy/8731/stream.aac",
                     "/iheart/proxy/8731/playlist.m3u",
                     "/iheart/stations/8731/station.json",
                 ]
@@ -1451,6 +1459,7 @@ class SiriusXmAuthTests(unittest.TestCase):
                 "/api/iheart/search": True,
                 "/api/iheart/stations/8731/stream": True,
                 "/iheart/proxy/8731/stream": True,
+                "/iheart/proxy/8731/stream.aac": True,
                 "/iheart/proxy/8731/playlist.m3u": True,
                 "/iheart/stations/8731/station.json": True,
             },

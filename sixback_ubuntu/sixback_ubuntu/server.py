@@ -162,6 +162,7 @@ class SixBackServer(ThreadingHTTPServer):
         self.route("GET", r"/api/iheart/stations/(?P<station_id>[^/]+)/stream", handle_iheart_station_stream)
         self.route("GET", r"/iheart/stations/(?P<station_id>[^/]+)/station\.json", handle_iheart_station_descriptor)
         self.route("GET", r"/iheart/proxy/(?P<station_id>[^/]+)/playlist\.m3u", handle_iheart_proxy_playlist)
+        self.route("GET", r"/iheart/proxy/(?P<station_id>[^/]+)/stream\.aac", handle_iheart_proxy_stream)
         self.route("GET", r"/iheart/proxy/(?P<station_id>[^/]+)/stream", handle_iheart_proxy_stream)
         self.route(
             "GET",
@@ -836,7 +837,7 @@ def handle_iheart_station_descriptor(req: SixBackHandler, station_id: str) -> No
 
 
 def handle_iheart_proxy_playlist(req: SixBackHandler, station_id: str) -> None:
-    body = f"#EXTM3U\n{iheart_proxy_stream_url(req.server.public_base, station_id)}\n"
+    body = iheart_playlist_body(req.server.public_base, station_id)
     req.send_text(body, content_type="audio/x-mpegurl")
 
 
@@ -953,11 +954,15 @@ def normalize_iheart_search_station(item: Any) -> Json:
 
 
 def iheart_proxy_stream_url(base_url: str, station_id: str) -> str:
-    return f"{base_url.strip().rstrip('/')}/iheart/proxy/{urllib.parse.quote(station_id.strip())}/stream"
+    return f"{base_url.strip().rstrip('/')}/iheart/proxy/{urllib.parse.quote(station_id.strip())}/stream.aac"
 
 
 def iheart_playlist_url(base_url: str, station_id: str) -> str:
     return f"{base_url.strip().rstrip('/')}/iheart/proxy/{urllib.parse.quote(station_id.strip())}/playlist.m3u"
+
+
+def iheart_playlist_body(base_url: str, station_id: str) -> str:
+    return f"{iheart_proxy_stream_url(base_url, station_id)}\n"
 
 
 def iheart_station_descriptor_url(
