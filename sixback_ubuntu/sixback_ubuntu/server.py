@@ -160,6 +160,8 @@ class SixBackServer(ThreadingHTTPServer):
         self.route("GET", r"/api/tunein/stations/(?P<station_id>[^/]+)/icy-debug", handle_tunein_icy_debug)
         self.route("GET", r"/api/iheart/search", handle_iheart_search)
         self.route("GET", r"/api/iheart/stations/(?P<station_id>[^/]+)/stream", handle_iheart_station_stream)
+        self.route("GET", r"/iheart/stations/(?P<station_id>[^/]+)/station\.json", handle_iheart_station_descriptor)
+        self.route("GET", r"/iheart/proxy/(?P<station_id>[^/]+)/playlist\.m3u", handle_iheart_proxy_playlist)
         self.route("GET", r"/iheart/proxy/(?P<station_id>[^/]+)/stream", handle_iheart_proxy_stream)
         self.route(
             "GET",
@@ -807,6 +809,9 @@ def handle_iheart_search(req: SixBackHandler) -> None:
 
 
 def handle_iheart_station_stream(req: SixBackHandler, station_id: str) -> None:
+    query = parse_qs(urlparse(req.path).query)
+    name = (query.get("name") or [""])[0]
+    image_url = (query.get("image") or [""])[0]
     try:
         upstream_stream_url = resolve_iheart_stream_url(station_id)
     except Exception as exc:
@@ -815,10 +820,24 @@ def handle_iheart_station_stream(req: SixBackHandler, station_id: str) -> None:
     req.send_json(
         {
             "station_id": station_id,
-            "stream_url": iheart_proxy_stream_url(req.server.public_base, station_id),
+            "stream_url": iheart_station_descriptor_url(req.server.public_base, station_id, name, image_url),
+            "playlist_url": iheart_playlist_url(req.server.public_base, station_id),
+            "proxy_stream_url": iheart_proxy_stream_url(req.server.public_base, station_id),
             "upstream_stream_url": upstream_stream_url,
         }
     )
+
+
+def handle_iheart_station_descriptor(req: SixBackHandler, station_id: str) -> None:
+    query = parse_qs(urlparse(req.path).query)
+    name = (query.get("name") or [station_id])[0]
+    image_url = (query.get("image") or [""])[0]
+    req.send_json(iheart_station_descriptor(req.server.public_base, station_id, name, image_url))
+
+
+def handle_iheart_proxy_playlist(req: SixBackHandler, station_id: str) -> None:
+    body = f"#EXTM3U\n{iheart_proxy_stream_url(req.server.public_base, station_id)}\n"
+    req.send_text(body, content_type="audio/x-mpegurl")
 
 
 def handle_iheart_proxy_stream(req: SixBackHandler, station_id: str) -> None:
@@ -935,6 +954,41 @@ def normalize_iheart_search_station(item: Any) -> Json:
 
 def iheart_proxy_stream_url(base_url: str, station_id: str) -> str:
     return f"{base_url.strip().rstrip('/')}/iheart/proxy/{urllib.parse.quote(station_id.strip())}/stream"
+
+
+def iheart_playlist_url(base_url: str, station_id: str) -> str:
+    return f"{base_url.strip().rstrip('/')}/iheart/proxy/{urllib.parse.quote(station_id.strip())}/playlist.m3u"
+
+
+def iheart_station_descriptor_url(
+    base_url: str,
+    station_id: str,
+    name: str = "",
+    image_url: str = "",
+) -> str:
+    url = f"{base_url.strip().rstrip('/')}/iheart/stations/{urllib.parse.quote(station_id.strip())}/station.json"
+    query: dict[str, str] = {}
+    if name:
+        query["name"] = name
+    if image_url:
+        query["image"] = image_url
+    if query:
+        url += "?" + urllib.parse.urlencode(query)
+    return url
+
+
+def iheart_station_descriptor(base_url: str, station_id: str, name: str, image_url: str = "") -> Json:
+    playlist = iheart_playlist_url(base_url, station_id)
+    return {
+        "audio": {
+            "hasPlaylist": True,
+            "isRealtime": True,
+            "streamUrl": playlist,
+        },
+        "imageUrl": image_url,
+        "name": name or station_id,
+        "streamType": "liveRadio",
+    }
 
 
 def resolve_iheart_stream_url(station_id: str) -> str:
@@ -2468,7 +2522,11 @@ ADMIN_HTML = """<!doctype html>
       status.textContent = 'Resolving iHeart stream...';
       status.className = 'status';
       try {
-        const data = await api(`/api/iheart/stations/${encodeURIComponent(option.value)}/stream`);
+        const params = new URLSearchParams({
+          name: option.dataset.name || option.textContent,
+          image: option.dataset.imageUrl || '',
+        });
+        const data = await api(`/api/iheart/stations/${encodeURIComponent(option.value)}/stream?${params.toString()}`);
         card.querySelector('[data-field="source"]').value = 'LOCAL_INTERNET_RADIO';
         card.querySelector('[data-field="station_id"]').value = '';
         card.querySelector('[data-field="name"]').value = option.dataset.name || option.textContent;

@@ -36,7 +36,10 @@ from sixback_ubuntu.sixback_ubuntu.server import (
     build_siriusxm_content_item,
     rewrite_siriusxm_preset_content_item,
     handle_siriusxm_now_playing_debug,
+    iheart_playlist_url,
     iheart_proxy_stream_url,
+    iheart_station_descriptor,
+    iheart_station_descriptor_url,
     normalize_iheart_search_station,
     normalize_siriusxm_catalog_channel,
     maybe_override_siriusxm_preset_press,
@@ -1164,6 +1167,31 @@ class SiriusXmAuthTests(unittest.TestCase):
             "http://ubuntu.example:8000/iheart/proxy/8731/stream",
         )
 
+    def test_iheart_station_descriptor_points_to_local_playlist(self) -> None:
+        descriptor = iheart_station_descriptor(
+            "http://ubuntu.example:8000",
+            "8731",
+            "Big 95.5",
+            "https://i.iheart.com/logo.png",
+        )
+
+        self.assertEqual(descriptor["name"], "Big 95.5")
+        self.assertEqual(descriptor["streamType"], "liveRadio")
+        self.assertEqual(descriptor["imageUrl"], "https://i.iheart.com/logo.png")
+        self.assertEqual(descriptor["audio"]["hasPlaylist"], True)
+        self.assertEqual(descriptor["audio"]["isRealtime"], True)
+        self.assertEqual(descriptor["audio"]["streamUrl"], "http://ubuntu.example:8000/iheart/proxy/8731/playlist.m3u")
+
+    def test_iheart_descriptor_url_is_used_as_preset_location(self) -> None:
+        self.assertEqual(
+            iheart_station_descriptor_url("http://ubuntu.example:8000", "8731"),
+            "http://ubuntu.example:8000/iheart/stations/8731/station.json",
+        )
+        self.assertEqual(
+            iheart_playlist_url("http://ubuntu.example:8000", "8731"),
+            "http://ubuntu.example:8000/iheart/proxy/8731/playlist.m3u",
+        )
+
     def test_siriusxm_metadata_proxy_debug_identifies_hls_not_icy(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             store = Store(os.path.join(tmp, "state.sqlite3"))
@@ -1406,6 +1434,8 @@ class SiriusXmAuthTests(unittest.TestCase):
                     "/api/iheart/search",
                     "/api/iheart/stations/8731/stream",
                     "/iheart/proxy/8731/stream",
+                    "/iheart/proxy/8731/playlist.m3u",
+                    "/iheart/stations/8731/station.json",
                 ]
                 matched = {
                     path: any(method == "GET" and pattern.fullmatch(path) for method, pattern, _handler in server.routes)
@@ -1421,6 +1451,8 @@ class SiriusXmAuthTests(unittest.TestCase):
                 "/api/iheart/search": True,
                 "/api/iheart/stations/8731/stream": True,
                 "/iheart/proxy/8731/stream": True,
+                "/iheart/proxy/8731/playlist.m3u": True,
+                "/iheart/stations/8731/station.json": True,
             },
         )
 
