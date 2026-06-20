@@ -207,8 +207,8 @@ class SixBackServer(ThreadingHTTPServer):
 
 def handle_root(req: SixBackHandler) -> None:
     req.send_text(
-        '<!doctype html><html><head><meta charset="utf-8"><title>SixBack Ubuntu</title></head>'
-        '<body><h1>SixBack Ubuntu</h1><p>Admin UI: <a href="/admin">/admin</a></p></body></html>',
+        '<!doctype html><html><head><meta charset="utf-8"><title>SoundTouch Bridge</title></head>'
+        '<body><h1>SoundTouch Bridge</h1><p>Admin UI: <a href="/admin">/admin</a></p></body></html>',
         content_type="text/html; charset=utf-8",
     )
 
@@ -1853,7 +1853,7 @@ ADMIN_HTML = """<!doctype html>
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>SixBack Ubuntu</title>
+  <title>SoundTouch Bridge</title>
   <style>
     :root {
       color-scheme: light;
@@ -2021,7 +2021,7 @@ ADMIN_HTML = """<!doctype html>
 </head>
 <body>
   <header>
-    <h1>SixBack Ubuntu</h1>
+    <h1>SoundTouch Bridge</h1>
     <div class="meta" id="serverMeta"></div>
   </header>
   <main>

@@ -1399,6 +1399,8 @@ class SiriusXmAuthTests(unittest.TestCase):
         thread.assert_not_called()
 
     def test_admin_ui_exposes_siriusxm_channel_picker(self) -> None:
+        self.assertIn("SoundTouch Bridge", ADMIN_HTML)
+        self.assertNotIn("<h1>SixBack Ubuntu</h1>", ADMIN_HTML)
         self.assertIn("siriusChannelSearch", ADMIN_HTML)
         self.assertIn("loadSiriusCatalog", ADMIN_HTML)
         self.assertIn("data-action=\"pick-sirius\"", ADMIN_HTML)
