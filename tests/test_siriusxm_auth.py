@@ -1164,6 +1164,7 @@ class SiriusXmAuthTests(unittest.TestCase):
                 store.conn.close()
 
         self.assertIn('<ContentItem source="IHEART"', raw)
+        self.assertNotIn('type="stationurl"', raw)
         self.assertIn("IHeartCILocation", raw)
         self.assertIn("id=&quot;5305&quot;", raw)
         self.assertIn('sourceAccount="cgrzadziel@example.com"', raw)
@@ -1275,7 +1276,7 @@ class SiriusXmAuthTests(unittest.TestCase):
     def test_push_station_to_speaker_reports_speaker_http_error_body(self) -> None:
         speaker = {"device_id": "speaker-1", "ip": "192.168.1.50"}
         raw = (
-            '<ContentItem source="IHEART" type="stationurl" '
+            '<ContentItem source="IHEART" '
             'location="&lt;IHeartCILocation id=&quot;857&quot; locationType=&quot;LIVE_STATION&quot; /&gt;" '
             'sourceAccount="secret@example.com" isPresetable="true"><itemName>Rock 95.5</itemName></ContentItem>'
         )

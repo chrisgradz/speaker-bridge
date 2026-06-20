@@ -499,7 +499,7 @@ def build_iheart_content_item(
         'locationType="LIVE_STATION" />'
     )
     item = (
-        f'<ContentItem source="IHEART" type="stationurl" location="{escape(location)}" '
+        f'<ContentItem source="IHEART" location="{escape(location)}" '
         f'sourceAccount="{escape(source_account)}" isPresetable="true">'
         f"<itemName>{escape(name)}</itemName>"
     )
