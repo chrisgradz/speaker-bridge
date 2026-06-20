@@ -2689,7 +2689,7 @@ ADMIN_HTML = """<!doctype html>
       <h2>Speakers</h2>
       <div class="add-row">
         <label>Speaker IP
-          <input id="speakerIp" inputmode="decimal" placeholder="192.168.10.50">
+          <input id="speakerIp" inputmode="decimal" placeholder="192.168.1.50">
         </label>
         <button id="addSpeaker">Add</button>
       </div>

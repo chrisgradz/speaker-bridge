@@ -1,17 +1,17 @@
 # SoundTouch Bridge Deployment Guide
 
-This guide installs SoundTouch Bridge as a local Bose SoundTouch cloud
-replacement on Ubuntu.
+This is the canonical deployment guide for installing SoundTouch Bridge as a
+local Bose SoundTouch cloud replacement on Ubuntu.
 
-The examples assume:
+For a GitHub clone workflow, see [INSTALL_FROM_GITHUB.md](INSTALL_FROM_GITHUB.md).
+
+Use placeholders below:
 
 ```text
-Ubuntu server IP: 192.168.1.25
-SoundTouch Bridge URL: http://192.168.1.25:8000
-Speaker IP: 192.168.1.50
+BRIDGE_IP   Ubuntu server LAN IP
+SPEAKER_IP  SoundTouch speaker LAN IP
+DEVICE_ID   SoundTouch speaker device ID returned by the API
 ```
-
-Replace those values with your actual LAN addresses.
 
 ## 1. Prepare Ubuntu
 
@@ -21,17 +21,23 @@ sudo apt install -y python3 git curl
 ```
 
 Give the Ubuntu server a stable LAN IP, preferably with a DHCP reservation in
-your router. The SoundTouch speaker stores the literal cloud URL, so the server
+your router. The SoundTouch speaker stores the literal cloud URL, so the bridge
 IP should not change after migration.
 
-## 2. Copy The Project
+## 2. Copy Or Clone The Project
 
-Copy the local `soundtouch_bridge` package and support files to the Ubuntu
-server.
+From GitHub:
 
 ```bash
-scp -r soundtouch_bridge tools LICENSE.md licenses user@192.168.1.25:~/soundtouch-bridge/
-ssh user@192.168.1.25
+git clone git@github.com:chrisgradz/SoundTouch.git
+cd SoundTouch
+```
+
+Or copy from a local checkout:
+
+```bash
+scp -r soundtouch_bridge LICENSE.md THIRD_PARTY_NOTICES.md licenses user@BRIDGE_IP:~/soundtouch-bridge/
+ssh user@BRIDGE_IP
 cd ~/soundtouch-bridge
 ```
 
@@ -41,39 +47,37 @@ cd ~/soundtouch-bridge
 python3 -m soundtouch_bridge \
   --host 0.0.0.0 \
   --port 8000 \
-  --public-base http://192.168.1.25:8000
+  --public-base http://BRIDGE_IP:8000
 ```
 
-In another terminal, verify the service:
+Verify the service:
 
 ```bash
-curl http://192.168.1.25:8000/healthz
-curl http://192.168.1.25:8000/bmx/registry/v1/services
+curl http://BRIDGE_IP:8000/healthz
+curl http://BRIDGE_IP:8000/bmx/registry/v1/services
 ```
 
-Open the admin UI:
+Open:
 
 ```text
-http://192.168.1.25:8000/admin
+http://BRIDGE_IP:8000/admin
+http://BRIDGE_IP:8000/play
 ```
 
 ## 4. Add A SoundTouch Speaker
 
-Find the speaker IP from your router, DHCP lease table, or existing SoundTouch
-app setup.
-
 ```bash
-curl -X POST http://192.168.1.25:8000/api/speakers \
+curl -X POST http://BRIDGE_IP:8000/api/speakers \
   -H 'Content-Type: application/json' \
-  -d '{"ip":"192.168.1.50"}'
+  -d '{"ip":"SPEAKER_IP"}'
 ```
 
-The response should include a `device_id`. Use that value in the next commands.
+The response should include a `device_id`.
 
 ## 5. Import Existing Presets
 
 ```bash
-curl -X POST http://192.168.1.25:8000/api/speakers/DEVICE_ID/import-presets
+curl -X POST http://BRIDGE_IP:8000/api/speakers/DEVICE_ID/import-presets
 ```
 
 This reads the speaker's current preset data from
@@ -82,44 +86,39 @@ This reads the speaker's current preset data from
 ## 6. Migrate The Speaker
 
 ```bash
-curl -X POST http://192.168.1.25:8000/api/speakers/DEVICE_ID/migrate
+curl -X POST http://BRIDGE_IP:8000/api/speakers/DEVICE_ID/migrate
 ```
 
 This connects to the Bose diagnostic shell on TCP port `17000`, rewrites the
-speaker's cloud URLs to `http://192.168.1.25:8000`, and reboots the speaker.
+speaker's cloud URLs to `http://BRIDGE_IP:8000`, and reboots the speaker.
 
 Wait 1-2 minutes after migration before testing preset buttons.
 
-## 7. SiriusXM Env File
+## 7. Configure Service Credentials
 
-The SiriusXM credentials file is:
+The credentials file is:
 
 ```text
 /etc/soundtouch-bridge/siriusxm.env
 ```
 
-Create it with:
+Create it:
 
 ```bash
 sudo install -d -m 750 -o root -g soundtouch /etc/soundtouch-bridge
+sudo cp soundtouch-bridge.env.example /etc/soundtouch-bridge/siriusxm.env
 sudo nano /etc/soundtouch-bridge/siriusxm.env
 ```
 
-Put your SiriusXM streaming login in that file:
+Set values as needed:
 
 ```bash
 SIRIUSXM_USERNAME='your-siriusxm-login'
 SIRIUSXM_PASSWORD='your-siriusxm-password'
-```
-
-If you want native iHeart push-play experiments to use the same iHeart account
-identity that was present in old Bose presets, add it too:
-
-```bash
 IHEART_SOURCE_ACCOUNT='your-iheart-login-or-source-account'
 ```
 
-Then lock it down:
+Lock down the file:
 
 ```bash
 sudo chown root:soundtouch /etc/soundtouch-bridge/siriusxm.env
@@ -128,12 +127,10 @@ sudo chmod 640 /etc/soundtouch-bridge/siriusxm.env
 
 ## 8. Install As A Systemd Service
 
-After manual testing works, install the service permanently:
-
 ```bash
 sudo useradd --system --home /var/lib/soundtouch-bridge --create-home soundtouch 2>/dev/null || true
 sudo install -d -m 755 -o soundtouch -g soundtouch /opt/soundtouch-bridge /var/lib/soundtouch-bridge
-sudo cp -a soundtouch_bridge tools LICENSE.md licenses /opt/soundtouch-bridge/
+sudo cp -a soundtouch_bridge LICENSE.md THIRD_PARTY_NOTICES.md licenses /opt/soundtouch-bridge/
 sudo chown -R soundtouch:soundtouch /opt/soundtouch-bridge /var/lib/soundtouch-bridge
 ```
 
@@ -148,7 +145,7 @@ Wants=network-online.target
 [Service]
 WorkingDirectory=/opt/soundtouch-bridge
 EnvironmentFile=-/etc/soundtouch-bridge/siriusxm.env
-ExecStart=/usr/bin/python3 -m soundtouch_bridge --host 0.0.0.0 --port 8000 --public-base http://192.168.1.25:8000 --db /var/lib/soundtouch-bridge/state.sqlite3
+ExecStart=/usr/bin/python3 -m soundtouch_bridge --host 0.0.0.0 --port 8000 --public-base http://BRIDGE_IP:8000 --db /var/lib/soundtouch-bridge/state.sqlite3
 Restart=on-failure
 User=soundtouch
 Group=soundtouch
@@ -176,36 +173,38 @@ journalctl -u soundtouch-bridge -f
 If Ubuntu firewall is enabled:
 
 ```bash
-sudo ufw allow 8000/tcp
+sudo ufw allow from LOCAL_LAN_CIDR to any port 8000 proto tcp
 ```
 
-The Ubuntu server must also be able to reach the speaker on:
+The Ubuntu server must also be able to reach each speaker on:
 
 ```text
 TCP 8090
 TCP 17000
 ```
 
+Do not expose port `8000` directly to the public internet.
+
 ## 10. Troubleshooting
 
 Check speaker reachability:
 
 ```bash
-curl http://192.168.1.50:8090/info
-curl http://192.168.1.50:8090/presets
+curl http://SPEAKER_IP:8090/info
+curl http://SPEAKER_IP:8090/presets
 ```
 
-Check server state:
+Check bridge state:
 
 ```bash
-curl http://192.168.1.25:8000/api/speakers
+curl http://BRIDGE_IP:8000/api/speakers
 ```
 
 Check SiriusXM auth status:
 
 ```bash
-curl http://192.168.1.25:8000/api/siriusxm/session
-curl -X POST http://192.168.1.25:8000/api/siriusxm/session/login
+curl http://BRIDGE_IP:8000/api/siriusxm/session
+curl -X POST http://BRIDGE_IP:8000/api/siriusxm/session/login
 ```
 
 Check service logs:

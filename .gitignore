@@ -1,6 +1,12 @@
 SixBack/
+.agents/
+.codex/
 Current_speaker_presets.json
-*.har
-*.HAR
 __pycache__/
 *.py[cod]
+*.db
+*.sqlite
+*.sqlite3
+*.log
+.env
+siriusxm.env

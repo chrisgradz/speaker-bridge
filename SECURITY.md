@@ -1,0 +1,53 @@
+# Security Policy
+
+## Intended Deployment
+
+SoundTouch Bridge is intended for trusted home or lab LAN use only. Do not
+expose the bridge directly to the public internet.
+
+The bridge can:
+
+- accept commands that make SoundTouch speakers play audio,
+- store speaker metadata and presets in SQLite,
+- use configured service credentials to refresh authenticated streams,
+- expose local admin and play pages on the configured HTTP port.
+
+Keep the service bound to a trusted network and protect it with your firewall,
+VPN, or reverse proxy access controls if you need remote access.
+
+## Credentials
+
+Service credentials are read from:
+
+```text
+/etc/soundtouch-bridge/siriusxm.env
+```
+
+Recommended permissions:
+
+```bash
+sudo chown root:soundtouch /etc/soundtouch-bridge/siriusxm.env
+sudo chmod 640 /etc/soundtouch-bridge/siriusxm.env
+```
+
+Never commit real credentials, speaker preset exports, account IDs, device IDs,
+cookies, or browser session captures.
+
+## Reporting A Vulnerability
+
+Open a GitHub issue if the report does not include sensitive details. If the
+report includes credentials, private network details, or exploitable steps,
+contact the maintainer privately first.
+
+Please include:
+
+- affected version or commit,
+- deployment environment,
+- steps to reproduce,
+- expected and actual behavior,
+- any relevant logs with secrets removed.
+
+## Supported Versions
+
+This project is early-stage community software. Security fixes are applied to
+the main branch unless a release branch policy is added later.
