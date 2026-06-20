@@ -597,6 +597,8 @@ def push_station_to_speaker(speaker: Json, raw_content_item: str, wake: bool = F
     if not ip:
         return {"attempted": False, "ok": False, "message": "speaker IP is not known"}
     before = speaker_now_playing_snapshot(ip)
+    sent_content_item = redact_content_item(raw_content_item)
+    print(f"[push-play] {speaker.get('device_id', '')} sent_item={sent_content_item}", flush=True)
     is_standby = str(before.get("source", "")).upper() == "STANDBY"
     woke_from_standby = False
     if is_standby and wake:
@@ -611,9 +613,16 @@ def push_station_to_speaker(speaker: Json, raw_content_item: str, wake: bool = F
     try:
         select_content_item(ip, raw_content_item)
     except Exception as exc:
-        message = f"{type(exc).__name__}: {exc}"
+        message = speaker_select_error_message(exc)
         print(f"[push-play] {speaker.get('device_id', '')} failed: {message}", flush=True)
-        return {"attempted": True, "ok": False, "message": message, "before": before, "woke_from_standby": woke_from_standby}
+        return {
+            "attempted": True,
+            "ok": False,
+            "message": message,
+            "before": before,
+            "woke_from_standby": woke_from_standby,
+            "sent_content_item": sent_content_item,
+        }
     snapshot = wait_for_selected_now_playing(ip)
     print(
         f"[push-play] {speaker.get('device_id', '')} sent /select"
@@ -628,8 +637,31 @@ def push_station_to_speaker(speaker: Json, raw_content_item: str, wake: bool = F
         "message": "sent to speaker",
         "before": before,
         "woke_from_standby": woke_from_standby,
+        "sent_content_item": sent_content_item,
         "now_playing": snapshot,
     }
+
+
+def speaker_select_error_message(exc: Exception) -> str:
+    message = f"{type(exc).__name__}: {exc}"
+    if not isinstance(exc, urllib.error.HTTPError):
+        return message
+    try:
+        body = exc.read().decode("utf-8", "replace").strip()
+    except Exception:
+        body = ""
+    finally:
+        try:
+            exc.close()
+        except Exception:
+            pass
+    if body:
+        message += f" response={body[:1000]}"
+    return message
+
+
+def redact_content_item(raw_content_item: str) -> str:
+    return re.sub(r'(sourceAccount=")[^"]*(")', r"\1[redacted]\2", raw_content_item)
 
 
 def speaker_now_playing_snapshot(ip: str) -> Json:
