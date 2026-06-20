@@ -32,7 +32,9 @@ from soundtouch_bridge.siriusxm import (
 )
 from soundtouch_bridge.server import (
     ADMIN_HTML,
+    PLAY_HTML,
     SoundTouchBridgeServer,
+    build_play_content_item,
     build_siriusxm_display_experiment_content_item,
     build_siriusxm_content_item,
     rewrite_siriusxm_preset_content_item,
@@ -57,6 +59,7 @@ from soundtouch_bridge.server import (
     search_tunein_stations,
     siriusxm_metadata_proxy_debug_payload,
     tunein_icy_debug_payload,
+    push_station_to_speaker,
 )
 from soundtouch_bridge.speaker import preset_to_xml, store_preset_xml
 
@@ -989,6 +992,103 @@ class SiriusXmAuthTests(unittest.TestCase):
         self.assertIn('location="https://stream.revma.ihrhls.com/zc8731"', xml)
         self.assertIn("<itemName>Big 95.5</itemName>", xml)
 
+    def test_build_play_content_item_renders_tunein_selection(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Store(os.path.join(tmp, "state.sqlite3"))
+            try:
+                raw = build_play_content_item(
+                    store,
+                    "speaker-1",
+                    "http://ubuntu.example:8000",
+                    {
+                        "source": "TUNEIN",
+                        "station_id": "s17947",
+                        "name": "The Answer Chicago",
+                        "image_url": "https://img.example/tunein.png",
+                    },
+                )
+            finally:
+                store.conn.close()
+
+        self.assertIn('<ContentItem source="TUNEIN" type="stationurl"', raw)
+        self.assertIn('location="/v1/playback/station/s17947"', raw)
+        self.assertIn("<itemName>The Answer Chicago</itemName>", raw)
+        self.assertIn("<containerArt>https://img.example/tunein.png</containerArt>", raw)
+
+    def test_build_play_content_item_renders_iheart_selection_as_local_stream(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Store(os.path.join(tmp, "state.sqlite3"))
+            try:
+                raw = build_play_content_item(
+                    store,
+                    "speaker-1",
+                    "http://ubuntu.example:8000",
+                    {
+                        "source": "IHEART",
+                        "station_id": "5305",
+                        "name": "WGN AM 720",
+                        "image_url": "https://img.example/wgn.png",
+                    },
+                )
+            finally:
+                store.conn.close()
+
+        self.assertIn('<ContentItem source="LOCAL_INTERNET_RADIO" type="stationurl"', raw)
+        self.assertIn("/iheart/stations/5305/station.json", raw)
+        self.assertIn("name=WGN+AM+720", raw)
+        self.assertIn("<itemName>WGN AM 720</itemName>", raw)
+
+    def test_build_play_content_item_renders_siriusxm_selection_and_saves_channel(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Store(os.path.join(tmp, "state.sqlite3"))
+            try:
+                store.set_preset(
+                    "speaker-1",
+                    {
+                        "slot": 3,
+                        "source": "SIRIUSXM",
+                        "name": "1st Wave",
+                        "station_id": "firstwave",
+                        "raw_content_item": build_siriusxm_content_item(
+                            "firstwave",
+                            "1st Wave",
+                            "",
+                            "source-account-123",
+                        ),
+                    },
+                )
+                raw = build_play_content_item(
+                    store,
+                    "speaker-1",
+                    "http://ubuntu.example:8000",
+                    {
+                        "source": "SIRIUSXM",
+                        "station_id": "big80s",
+                        "name": "80s on 8",
+                        "entity_url": "https://www.siriusxm.com/player/channel-linear/entity/example",
+                        "image_url": "https://img.example/80s.png",
+                    },
+                )
+                channel = store.get_siriusxm_channel("big80s")
+            finally:
+                store.conn.close()
+
+        self.assertIn('source="SIRIUSXM_EVEREST"', raw)
+        self.assertIn('location="/playback/station/big80s?preset_play=True"', raw)
+        self.assertIn('sourceAccount="source-account-123"', raw)
+        self.assertEqual(channel["name"], "80s on 8")
+        self.assertEqual(channel["entity_url"], "https://www.siriusxm.com/player/channel-linear/entity/example")
+
+    def test_push_station_to_speaker_selects_content_item(self) -> None:
+        speaker = {"device_id": "speaker-1", "ip": "192.168.1.50"}
+        raw = '<ContentItem source="TUNEIN" type="stationurl" location="/v1/playback/station/s17947"><itemName>Station</itemName></ContentItem>'
+
+        with patch("soundtouch_bridge.server.select_content_item") as select:
+            result = push_station_to_speaker(speaker, raw)
+
+        select.assert_called_once_with("192.168.1.50", raw)
+        self.assertEqual(result, {"attempted": True, "ok": True, "message": "sent to speaker"})
+
     def test_tunein_station_returns_audio_stream_shape(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             store = Store(os.path.join(tmp, "state.sqlite3"))
@@ -1401,6 +1501,7 @@ class SiriusXmAuthTests(unittest.TestCase):
 
     def test_admin_ui_exposes_siriusxm_channel_picker(self) -> None:
         self.assertIn("SoundTouch Bridge", ADMIN_HTML)
+        self.assertIn('href="/play"', ADMIN_HTML)
         self.assertIn("Missing /etc/soundtouch-bridge/siriusxm.env", ADMIN_HTML)
         self.assertIn("siriusChannelSearch", ADMIN_HTML)
         self.assertIn("loadSiriusCatalog", ADMIN_HTML)
@@ -1441,6 +1542,13 @@ class SiriusXmAuthTests(unittest.TestCase):
         self.assertIn("data-action=\"pick-iheart\"", ADMIN_HTML)
         self.assertIn("Use iHeart", ADMIN_HTML)
         self.assertIn("Preserved iHeart preset.", ADMIN_HTML)
+
+    def test_play_page_exposes_station_browser(self) -> None:
+        self.assertIn("Push To Speaker", PLAY_HTML)
+        self.assertIn("sourceTabs", PLAY_HTML)
+        self.assertIn("station-grid", PLAY_HTML)
+        self.assertIn("data-source=\"SIRIUSXM\"", PLAY_HTML)
+        self.assertIn("pushStation", PLAY_HTML)
 
     def test_tunein_search_route_is_registered(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1489,6 +1597,26 @@ class SiriusXmAuthTests(unittest.TestCase):
                 "/iheart/stations/8731/station.json": True,
             },
         )
+
+    def test_play_routes_are_registered(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Store(os.path.join(tmp, "state.sqlite3"))
+            server = SoundTouchBridgeServer(("127.0.0.1", 0), store, "http://ubuntu.example:8000")
+            try:
+                paths = ["/play", "/api/speakers/000C8A8DAF9E/play"]
+                matched = {
+                    path: any(
+                        method == ("POST" if path.endswith("/play") and path.startswith("/api/") else "GET")
+                        and pattern.fullmatch(path)
+                        for method, pattern, _handler in server.routes
+                    )
+                    for path in paths
+                }
+            finally:
+                server.server_close()
+                store.conn.close()
+
+        self.assertEqual(matched, {"/play": True, "/api/speakers/000C8A8DAF9E/play": True})
 
     def test_admin_ui_persists_save_confirmation_after_reload(self) -> None:
         self.assertIn("cardNotices", ADMIN_HTML)

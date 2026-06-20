@@ -129,12 +129,14 @@ class SoundTouchBridgeServer(ThreadingHTTPServer):
     def _register_routes(self) -> None:
         self.route("GET", r"/", handle_root)
         self.route("GET", r"/admin", handle_admin)
+        self.route("GET", r"/play", handle_play)
         self.route("GET", r"/healthz", handle_healthz)
         self.route("GET", r"/api/speakers", handle_list_speakers)
         self.route("POST", r"/api/speakers", handle_add_speaker)
         self.route("POST", r"/api/speakers/(?P<device_id>[^/]+)/import-presets", handle_import_presets)
         self.route("POST", r"/api/speakers/(?P<device_id>[^/]+)/migrate", handle_migrate)
         self.route("GET", r"/api/speakers/(?P<device_id>[^/]+)/events", handle_speaker_events)
+        self.route("POST", r"/api/speakers/(?P<device_id>[^/]+)/play", handle_play_station)
         self.route("GET", r"/api/accounts/(?P<account_id>[^/]+)/cloud-responses", handle_cloud_responses)
         self.route("GET", r"/api/speakers/(?P<device_id>[^/]+)/presets", handle_get_presets)
         self.route("PUT", r"/api/speakers/(?P<device_id>[^/]+)/presets/(?P<slot>[1-6])", handle_put_preset)
@@ -209,13 +211,17 @@ class SoundTouchBridgeServer(ThreadingHTTPServer):
 def handle_root(req: SoundTouchBridgeHandler) -> None:
     req.send_text(
         '<!doctype html><html><head><meta charset="utf-8"><title>SoundTouch Bridge</title></head>'
-        '<body><h1>SoundTouch Bridge</h1><p>Admin UI: <a href="/admin">/admin</a></p></body></html>',
+        '<body><h1>SoundTouch Bridge</h1><p><a href="/admin">Admin</a> <a href="/play">Play</a></p></body></html>',
         content_type="text/html; charset=utf-8",
     )
 
 
 def handle_admin(req: SoundTouchBridgeHandler) -> None:
     req.send_bytes(ADMIN_HTML.encode("utf-8"), content_type="text/html; charset=utf-8")
+
+
+def handle_play(req: SoundTouchBridgeHandler) -> None:
+    req.send_bytes(PLAY_HTML.encode("utf-8"), content_type="text/html; charset=utf-8")
 
 
 def handle_healthz(req: SoundTouchBridgeHandler) -> None:
@@ -253,6 +259,25 @@ def handle_speaker_events(req: SoundTouchBridgeHandler, device_id: str) -> None:
         req.send_json({"error": "unknown speaker"}, 404)
         return
     req.send_json({"device_id": device_id, "events": req.server.store.recent_scmudc_events(device_id)})
+
+
+def handle_play_station(req: SoundTouchBridgeHandler, device_id: str) -> None:
+    speaker = req.server.store.get_speaker(device_id)
+    if not speaker:
+        req.send_json({"error": "unknown speaker"}, 404)
+        return
+    try:
+        raw_content_item = build_play_content_item(
+            req.server.store,
+            device_id,
+            req.server.public_base,
+            req.read_json(),
+        )
+        result = push_station_to_speaker(speaker, raw_content_item)
+    except Exception as exc:
+        req.send_json({"error": type(exc).__name__, "message": str(exc)}, 400)
+        return
+    req.send_json({"device_id": device_id, "play": result, "raw_content_item": raw_content_item})
 
 
 def handle_cloud_responses(req: SoundTouchBridgeHandler, account_id: str) -> None:
@@ -444,6 +469,82 @@ def build_siriusxm_display_experiment_content_item(
     if image_url:
         item += f"<containerArt>{escape(image_url)}</containerArt>"
     return item + "</ContentItem>"
+
+
+def build_play_content_item(store: Store, device_id: str, base_url: str, body: Json) -> str:
+    source = str(body.get("source", "")).strip().upper()
+    name = str(body.get("name", "")).strip()
+    station_id = str(body.get("station_id", "")).strip()
+    image_url = str(body.get("image_url", "")).strip()
+    stream_url = str(body.get("stream_url", "")).strip()
+    if not source:
+        raise ValueError("source is required")
+    if not name:
+        raise ValueError("name is required")
+    if source == "TUNEIN":
+        if not station_id:
+            raise ValueError("station_id is required for TuneIn")
+        return build_basic_content_item("TUNEIN", f"/v1/playback/station/{station_id}", name, image_url)
+    if source == "SIRIUSXM":
+        if not station_id:
+            raise ValueError("station_id is required for SiriusXM")
+        station_id = station_id.rstrip("/").split("/")[-1].split("?", 1)[0]
+        existing_channel = store.get_siriusxm_channel(station_id)
+        store.upsert_siriusxm_channel(
+            station_id,
+            {
+                "name": name,
+                "entity_url": str(body.get("entity_url", "")).strip() or existing_channel.get("entity_url", ""),
+                "stream_url": existing_channel.get("stream_url", ""),
+            },
+        )
+        return build_siriusxm_content_item(
+            station_id,
+            name,
+            image_url,
+            first_siriusxm_source_account(store, device_id),
+        )
+    if source == "IHEART":
+        if not station_id:
+            raise ValueError("station_id is required for iHeart")
+        return build_basic_content_item(
+            "LOCAL_INTERNET_RADIO",
+            iheart_station_descriptor_url(base_url, station_id, name, image_url),
+            name,
+            image_url,
+        )
+    if source == "LOCAL_INTERNET_RADIO":
+        if not stream_url:
+            raise ValueError("stream_url is required for direct streams")
+        if not (stream_url.startswith("http://") or stream_url.startswith("https://")):
+            raise ValueError("stream_url must start with http:// or https://")
+        return build_basic_content_item("LOCAL_INTERNET_RADIO", stream_url, name, image_url)
+    raise ValueError(f"unsupported source: {source}")
+
+
+def build_basic_content_item(source: str, location: str, name: str, image_url: str = "") -> str:
+    item = (
+        f'<ContentItem source="{escape(source)}" type="stationurl" '
+        f'location="{escape(location)}" isPresetable="true">'
+        f"<itemName>{escape(name)}</itemName>"
+    )
+    if image_url:
+        item += f"<containerArt>{escape(image_url)}</containerArt>"
+    return item + "</ContentItem>"
+
+
+def push_station_to_speaker(speaker: Json, raw_content_item: str) -> Json:
+    ip = str(speaker.get("ip", "")).strip()
+    if not ip:
+        return {"attempted": False, "ok": False, "message": "speaker IP is not known"}
+    try:
+        select_content_item(ip, raw_content_item)
+    except Exception as exc:
+        message = f"{type(exc).__name__}: {exc}"
+        print(f"[push-play] {speaker.get('device_id', '')} failed: {message}", flush=True)
+        return {"attempted": True, "ok": False, "message": message}
+    print(f"[push-play] {speaker.get('device_id', '')} sent /select", flush=True)
+    return {"attempted": True, "ok": True, "message": "sent to speaker"}
 
 
 def rewrite_siriusxm_preset_content_item(preset: Json, experiment: bool) -> Json:
@@ -1849,6 +1950,357 @@ def handle_empty(req: SoundTouchBridgeHandler, **_: str) -> None:
     req.send_text("")
 
 
+PLAY_HTML = """<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SoundTouch Bridge Play</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #1f2933;
+      --muted: #5e6b76;
+      --line: #d7dde4;
+      --panel: #ffffff;
+      --bg: #eef2f6;
+      --action: #126b5c;
+      --accent: #244b7a;
+      --bad: #a83232;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--ink);
+      font: 15px/1.45 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 18px 24px;
+      border-bottom: 1px solid var(--line);
+      background: #f8fafc;
+    }
+    h1 { margin: 0; font-size: 20px; font-weight: 750; }
+    a { color: var(--accent); font-weight: 700; text-decoration: none; }
+    main {
+      display: grid;
+      grid-template-columns: 300px minmax(0, 1fr);
+      gap: 20px;
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 20px;
+    }
+    section {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 16px;
+    }
+    h2 { margin: 0 0 12px; font-size: 16px; }
+    label {
+      display: grid;
+      gap: 6px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 700;
+      text-transform: uppercase;
+    }
+    input, select {
+      width: 100%;
+      min-height: 38px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 8px 10px;
+      background: #fff;
+      color: var(--ink);
+    }
+    button {
+      border: 1px solid var(--action);
+      border-radius: 6px;
+      padding: 8px 11px;
+      background: var(--action);
+      color: #fff;
+      cursor: pointer;
+      font-weight: 700;
+    }
+    button.secondary {
+      background: #fff;
+      color: var(--action);
+    }
+    .toolbar {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin: 12px 0;
+      align-items: center;
+    }
+    .source-tabs button.active {
+      background: var(--accent);
+      border-color: var(--accent);
+    }
+    .station-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+      gap: 12px;
+      align-items: stretch;
+    }
+    .station-card {
+      display: grid;
+      grid-template-rows: 108px auto auto;
+      gap: 10px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 10px;
+      background: #fff;
+      min-width: 0;
+    }
+    .station-art {
+      width: 100%;
+      height: 108px;
+      display: grid;
+      place-items: center;
+      border-radius: 6px;
+      background: #eef2f6;
+      overflow: hidden;
+    }
+    .station-art img {
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+    }
+    .station-title {
+      min-height: 44px;
+      font-weight: 750;
+      overflow-wrap: anywhere;
+    }
+    .meta, .status { color: var(--muted); font-size: 13px; overflow-wrap: anywhere; }
+    .status.error { color: var(--bad); }
+    .status.ok { color: var(--action); }
+    @media (max-width: 820px) {
+      main { grid-template-columns: 1fr; padding: 12px; }
+      header { align-items: flex-start; flex-direction: column; }
+      .station-grid { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>SoundTouch Bridge</h1>
+    <nav><a href="/admin">Presets</a></nav>
+  </header>
+  <main>
+    <section>
+      <h2>Push To Speaker</h2>
+      <label>Speaker
+        <select id="speakerSelect"></select>
+      </label>
+      <div class="toolbar source-tabs" id="sourceTabs">
+        <button data-source="SIRIUSXM" class="active">SiriusXM</button>
+        <button data-source="TUNEIN" class="secondary">TuneIn</button>
+        <button data-source="IHEART" class="secondary">iHeart</button>
+        <button data-source="LOCAL_INTERNET_RADIO" class="secondary">Stream</button>
+      </div>
+      <label id="searchLabel">Search
+        <input id="stationSearch" placeholder="Search stations">
+      </label>
+      <div class="toolbar">
+        <button id="searchStations">Search</button>
+        <button class="secondary" id="loadSirius">Load SiriusXM</button>
+      </div>
+      <div class="status" id="status"></div>
+    </section>
+    <section>
+      <h2 id="listTitle">SiriusXM Channels</h2>
+      <div class="station-grid" id="stationGrid"></div>
+    </section>
+  </main>
+  <script>
+    const state = { speakers: [], source: 'SIRIUSXM', stations: { SIRIUSXM: [], TUNEIN: [], IHEART: [] } };
+    const $ = (id) => document.getElementById(id);
+
+    async function api(path, options = {}) {
+      const res = await fetch(path, {
+        ...options,
+        headers: { 'Content-Type': 'application/json', ...(options.headers || {}) },
+      });
+      const text = await res.text();
+      let data = {};
+      try { data = text ? JSON.parse(text) : {}; } catch { data = { raw: text }; }
+      if (!res.ok) throw new Error(data.message || data.error || `${res.status} ${res.statusText}`);
+      return data;
+    }
+
+    function setStatus(text, kind = '') {
+      const el = $('status');
+      el.textContent = text;
+      el.className = `status ${kind}`.trim();
+    }
+
+    async function loadSpeakers() {
+      const data = await api('/api/speakers');
+      state.speakers = data.speakers || [];
+      const select = $('speakerSelect');
+      select.innerHTML = state.speakers.map((speaker) => {
+        const label = `${speaker.name || speaker.device_id} - ${speaker.ip}`;
+        return `<option value="${escapeAttr(speaker.device_id)}">${escapeHtml(label)}</option>`;
+      }).join('');
+      if (!state.speakers.length) {
+        select.innerHTML = '<option value="">No speakers registered</option>';
+      }
+    }
+
+    function setSource(source) {
+      state.source = source;
+      document.querySelectorAll('#sourceTabs button').forEach((button) => {
+        const active = button.dataset.source === source;
+        button.className = active ? 'active' : 'secondary';
+      });
+      $('loadSirius').style.display = source === 'SIRIUSXM' ? 'inline-flex' : 'none';
+      $('searchStations').style.display = source === 'LOCAL_INTERNET_RADIO' ? 'none' : 'inline-flex';
+      $('searchLabel').style.display = source === 'LOCAL_INTERNET_RADIO' ? 'none' : 'grid';
+      $('listTitle').textContent =
+        source === 'SIRIUSXM' ? 'SiriusXM Channels' :
+        source === 'TUNEIN' ? 'TuneIn Stations' :
+        source === 'IHEART' ? 'iHeart Stations' : 'Direct Stream';
+      renderStations();
+    }
+
+    async function loadSirius() {
+      const data = await api('/api/siriusxm/catalog');
+      state.stations.SIRIUSXM = (data.channels || []).map((channel) => ({
+        source: 'SIRIUSXM',
+        station_id: channel.station_id,
+        name: channel.name || channel.station_id,
+        description: channel.number ? `Channel ${channel.number}` : '',
+        image_url: channel.image_url || '',
+        entity_url: channel.entity_url || '',
+      }));
+      renderStations();
+      setStatus(`Loaded ${state.stations.SIRIUSXM.length} SiriusXM channel(s)`, 'ok');
+    }
+
+    async function searchStations() {
+      const query = $('stationSearch').value.trim();
+      if (!query) {
+        setStatus('Enter a search term', 'error');
+        return;
+      }
+      if (state.source === 'SIRIUSXM') {
+        await loadSirius();
+        renderStations();
+        return;
+      }
+      const path = state.source === 'TUNEIN'
+        ? `/api/tunein/search?q=${encodeURIComponent(query)}`
+        : `/api/iheart/search?q=${encodeURIComponent(query)}`;
+      const data = await api(path);
+      state.stations[state.source] = (data.stations || []).map((station) => ({ ...station, source: state.source }));
+      renderStations();
+      setStatus(`Loaded ${state.stations[state.source].length} station(s)`, 'ok');
+    }
+
+    function visibleStations() {
+      const query = $('stationSearch').value.trim().toLowerCase();
+      return (state.stations[state.source] || []).filter((station) => {
+        const haystack = `${station.name || ''} ${station.description || ''} ${station.station_id || ''}`.toLowerCase();
+        return !query || haystack.includes(query);
+      });
+    }
+
+    function renderStations() {
+      const grid = $('stationGrid');
+      if (state.source === 'LOCAL_INTERNET_RADIO') {
+        grid.innerHTML = `
+          <div class="station-card">
+            <div class="station-art">URL</div>
+            <label>Name<input data-role="direct-name" placeholder="Station name"></label>
+            <label>Stream URL<input data-role="direct-url" placeholder="https://example.com/stream.mp3"></label>
+            <button data-action="push-direct">Push</button>
+          </div>`;
+        grid.querySelector('[data-action="push-direct"]').onclick = pushDirectStream;
+        return;
+      }
+      const stations = visibleStations();
+      if (!stations.length) {
+        grid.innerHTML = '<div class="meta">No stations loaded.</div>';
+        return;
+      }
+      grid.innerHTML = stations.map((station, index) => {
+        const image = station.image_url
+          ? `<img src="${escapeAttr(station.image_url)}" alt="">`
+          : `<span>${escapeHtml((station.name || '?').slice(0, 2).toUpperCase())}</span>`;
+        return `
+          <article class="station-card">
+            <div class="station-art">${image}</div>
+            <div>
+              <div class="station-title">${escapeHtml(station.name || station.station_id)}</div>
+              <div class="meta">${escapeHtml(station.description || station.station_id || '')}</div>
+            </div>
+            <button data-action="push" data-index="${index}">Push</button>
+          </article>`;
+      }).join('');
+      grid.querySelectorAll('[data-action="push"]').forEach((button) => {
+        button.onclick = () => pushStation(stations[Number(button.dataset.index)]);
+      });
+    }
+
+    async function pushDirectStream() {
+      const card = $('stationGrid').querySelector('.station-card');
+      await pushStation({
+        source: 'LOCAL_INTERNET_RADIO',
+        name: card.querySelector('[data-role="direct-name"]').value.trim(),
+        stream_url: card.querySelector('[data-role="direct-url"]').value.trim(),
+      });
+    }
+
+    async function pushStation(station) {
+      const deviceId = $('speakerSelect').value;
+      if (!deviceId) {
+        setStatus('Select a speaker', 'error');
+        return;
+      }
+      const payload = {
+        source: station.source,
+        station_id: station.station_id || '',
+        name: station.name || '',
+        image_url: station.image_url || '',
+        entity_url: station.entity_url || '',
+        stream_url: station.stream_url || '',
+      };
+      const data = await api(`/api/speakers/${encodeURIComponent(deviceId)}/play`, {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      });
+      setStatus(data.play && data.play.ok ? `Playing ${payload.name}` : data.play.message, data.play && data.play.ok ? 'ok' : 'error');
+    }
+
+    function escapeHtml(value) {
+      return String(value).replace(/[&<>"']/g, (ch) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
+    }
+    function escapeAttr(value) {
+      return escapeHtml(value).replace(/`/g, '&#96;');
+    }
+
+    document.querySelectorAll('#sourceTabs button').forEach((button) => {
+      button.onclick = () => setSource(button.dataset.source);
+    });
+    $('stationSearch').oninput = renderStations;
+    $('stationSearch').onkeydown = (event) => {
+      if (event.key === 'Enter') searchStations().catch((err) => setStatus(err.message, 'error'));
+    };
+    $('searchStations').onclick = () => searchStations().catch((err) => setStatus(err.message, 'error'));
+    $('loadSirius').onclick = () => loadSirius().catch((err) => setStatus(err.message, 'error'));
+    loadSpeakers().then(() => setSource('SIRIUSXM')).catch((err) => setStatus(err.message, 'error'));
+  </script>
+</body>
+</html>
+"""
+
+
 ADMIN_HTML = """<!doctype html>
 <html lang="en">
 <head>
@@ -2023,7 +2475,7 @@ ADMIN_HTML = """<!doctype html>
 <body>
   <header>
     <h1>SoundTouch Bridge</h1>
-    <div class="meta" id="serverMeta"></div>
+    <div class="meta"><a href="/play">Play</a> <span id="serverMeta"></span></div>
   </header>
   <main>
     <section>
