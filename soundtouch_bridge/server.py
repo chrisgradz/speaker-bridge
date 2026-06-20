@@ -661,7 +661,11 @@ def speaker_select_error_message(exc: Exception) -> str:
 
 
 def redact_content_item(raw_content_item: str) -> str:
-    return re.sub(r'(sourceAccount=")[^"]*(")', r"\1[redacted]\2", raw_content_item)
+    def repl(match: re.Match[str]) -> str:
+        marker = "[set]" if match.group(2) else "[empty]"
+        return f'{match.group(1)}{marker}{match.group(3)}'
+
+    return re.sub(r'(sourceAccount=")([^"]*)(")', repl, raw_content_item)
 
 
 def speaker_now_playing_snapshot(ip: str) -> Json:

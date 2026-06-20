@@ -1298,8 +1298,31 @@ class SiriusXmAuthTests(unittest.TestCase):
         self.assertIn("HTTP Error 500", result["message"])
         self.assertIn("<error>INVALID_SOURCE</error>", result["message"])
         self.assertIn('source="IHEART"', result["sent_content_item"])
-        self.assertIn('sourceAccount="[redacted]"', result["sent_content_item"])
+        self.assertIn('sourceAccount="[set]"', result["sent_content_item"])
         self.assertNotIn("secret@example.com", result["sent_content_item"])
+
+    def test_push_station_to_speaker_diagnostics_mark_empty_source_account(self) -> None:
+        speaker = {"device_id": "speaker-1", "ip": "192.168.1.50"}
+        raw = (
+            '<ContentItem source="IHEART" '
+            'location="&lt;IHeartCILocation id=&quot;857&quot; locationType=&quot;LIVE_STATION&quot; /&gt;" '
+            'sourceAccount="" isPresetable="true"><itemName>Rock 95.5</itemName></ContentItem>'
+        )
+        error = urllib.error.HTTPError(
+            "http://192.168.1.50:8090/select",
+            500,
+            "Internal Server Error",
+            {},
+            BytesIO(b"<error>UNKNOWN_SOURCE_ERROR</error>"),
+        )
+
+        with patch(
+            "soundtouch_bridge.server.now_playing_xml",
+            return_value='<nowPlaying source="STANDBY"><playStatus></playStatus></nowPlaying>',
+        ), patch("soundtouch_bridge.server.select_content_item", side_effect=error):
+            result = push_station_to_speaker(speaker, raw)
+
+        self.assertIn('sourceAccount="[empty]"', result["sent_content_item"])
 
     def test_push_station_to_speaker_does_not_wake_standby_by_default(self) -> None:
         speaker = {"device_id": "speaker-1", "ip": "192.168.1.50"}
