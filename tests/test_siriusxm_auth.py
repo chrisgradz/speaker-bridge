@@ -1922,9 +1922,11 @@ class SiriusXmAuthTests(unittest.TestCase):
         self.assertIn("Use iHeart", ADMIN_HTML)
         self.assertIn("Preserved iHeart preset.", ADMIN_HTML)
 
-    def test_play_page_exposes_isolated_experiment_station_browser(self) -> None:
-        self.assertIn("Experimental Play Lab", PLAY_HTML)
-        self.assertIn("Does not write presets or aliases", PLAY_HTML)
+    def test_play_page_exposes_station_browser(self) -> None:
+        self.assertIn("Play To Speaker", PLAY_HTML)
+        self.assertIn("Choose a source and send a station to the selected speaker.", PLAY_HTML)
+        self.assertNotIn("Experimental Play Lab", PLAY_HTML)
+        self.assertNotIn("Does not write presets or aliases", PLAY_HTML)
         self.assertIn("sourceTabs", PLAY_HTML)
         self.assertIn("station-grid", PLAY_HTML)
         self.assertIn("data-source=\"SIRIUSXM\"", PLAY_HTML)
@@ -1936,7 +1938,9 @@ class SiriusXmAuthTests(unittest.TestCase):
         self.assertNotIn("Stream URL", PLAY_HTML)
         self.assertIn("pushStation", PLAY_HTML)
         self.assertIn("wakeSpeaker", PLAY_HTML)
-        self.assertIn("/api/experiments/play/speakers/", PLAY_HTML)
+        self.assertIn("/api/speakers/", PLAY_HTML)
+        self.assertIn("/play", PLAY_HTML)
+        self.assertNotIn("/api/experiments/play/speakers/", PLAY_HTML)
         self.assertNotIn("playSlot", PLAY_HTML)
         self.assertIn(">Try Select</button>", PLAY_HTML)
         self.assertIn("grid-template-rows: 170px auto auto;", PLAY_HTML)
@@ -1999,7 +2003,11 @@ class SiriusXmAuthTests(unittest.TestCase):
             store = Store(os.path.join(tmp, "state.sqlite3"))
             server = SoundTouchBridgeServer(("127.0.0.1", 0), store, "http://ubuntu.example:8000")
             try:
-                paths = ["/play", "/api/experiments/play/speakers/000C8A8DAF9E/select"]
+                paths = [
+                    "/play",
+                    "/api/speakers/000C8A8DAF9E/play",
+                    "/api/experiments/play/speakers/000C8A8DAF9E/select",
+                ]
                 matched = {
                     path: any(
                         method == ("POST" if path.startswith("/api/") else "GET")
@@ -2012,7 +2020,14 @@ class SiriusXmAuthTests(unittest.TestCase):
                 server.server_close()
                 store.conn.close()
 
-        self.assertEqual(matched, {"/play": True, "/api/experiments/play/speakers/000C8A8DAF9E/select": True})
+        self.assertEqual(
+            matched,
+            {
+                "/play": True,
+                "/api/speakers/000C8A8DAF9E/play": True,
+                "/api/experiments/play/speakers/000C8A8DAF9E/select": True,
+            },
+        )
 
     def test_siriusxm_descriptor_route_is_registered(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

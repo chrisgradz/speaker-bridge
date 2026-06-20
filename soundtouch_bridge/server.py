@@ -143,6 +143,7 @@ class SoundTouchBridgeServer(ThreadingHTTPServer):
         self.route("POST", r"/api/speakers/(?P<device_id>[^/]+)/import-presets", handle_import_presets)
         self.route("POST", r"/api/speakers/(?P<device_id>[^/]+)/migrate", handle_migrate)
         self.route("GET", r"/api/speakers/(?P<device_id>[^/]+)/events", handle_speaker_events)
+        self.route("POST", r"/api/speakers/(?P<device_id>[^/]+)/play", handle_play_station)
         self.route(
             "POST",
             r"/api/experiments/play/speakers/(?P<device_id>[^/]+)/select",
@@ -2157,7 +2158,7 @@ PLAY_HTML = """<!doctype html>
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>SoundTouch Bridge Experimental Play Lab</title>
+  <title>SoundTouch Bridge Play To Speaker</title>
   <style>
     :root {
       color-scheme: light;
@@ -2233,7 +2234,7 @@ PLAY_HTML = """<!doctype html>
       background: #fff;
       color: var(--action);
     }
-    .experiment-note {
+    .page-note {
       margin: 0 0 12px;
       color: var(--muted);
       font-size: 13px;
@@ -2317,8 +2318,8 @@ PLAY_HTML = """<!doctype html>
   </header>
   <main>
     <section>
-      <h2>Experimental Play Lab</h2>
-      <p class="experiment-note">Does not write presets or aliases. Use only for testing direct speaker select behavior.</p>
+      <h2>Play To Speaker</h2>
+      <p class="page-note">Choose a source and send a station to the selected speaker.</p>
       <label>Speaker
         <select id="speakerSelect"></select>
       </label>
@@ -2477,7 +2478,7 @@ PLAY_HTML = """<!doctype html>
         stream_url: station.stream_url || '',
         wake: $('wakeSpeaker').checked,
       };
-      const data = await api(`/api/experiments/play/speakers/${encodeURIComponent(deviceId)}/select`, {
+      const data = await api(`/api/speakers/${encodeURIComponent(deviceId)}/play`, {
         method: 'POST',
         body: JSON.stringify(payload),
       });
