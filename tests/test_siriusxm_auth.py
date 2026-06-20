@@ -1687,10 +1687,12 @@ class SiriusXmAuthTests(unittest.TestCase):
         self.assertIn("/api/experiments/play/speakers/", PLAY_HTML)
         self.assertNotIn("playSlot", PLAY_HTML)
         self.assertIn(">Try Select</button>", PLAY_HTML)
-        self.assertIn("padding: 12px;", PLAY_HTML)
-        self.assertIn("max-width: 100%;", PLAY_HTML)
-        self.assertIn("max-height: 100%;", PLAY_HTML)
-        self.assertIn("object-fit: scale-down;", PLAY_HTML)
+        self.assertIn("grid-template-rows: 136px auto auto;", PLAY_HTML)
+        self.assertIn("height: 136px;", PLAY_HTML)
+        self.assertIn("padding: 16px;", PLAY_HTML)
+        self.assertIn("width: 100%;", PLAY_HTML)
+        self.assertIn("height: 100%;", PLAY_HTML)
+        self.assertIn("object-fit: contain;", PLAY_HTML)
 
     def test_tunein_search_route_is_registered(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

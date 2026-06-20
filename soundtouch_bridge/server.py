@@ -2173,7 +2173,7 @@ PLAY_HTML = """<!doctype html>
     }
     .station-card {
       display: grid;
-      grid-template-rows: 108px auto auto;
+      grid-template-rows: 136px auto auto;
       gap: 10px;
       border: 1px solid var(--line);
       border-radius: 8px;
@@ -2183,20 +2183,19 @@ PLAY_HTML = """<!doctype html>
     }
     .station-art {
       width: 100%;
-      height: 108px;
+      height: 136px;
       display: grid;
       place-items: center;
       border-radius: 6px;
-      padding: 12px;
+      padding: 16px;
       background: #eef2f6;
       overflow: hidden;
     }
     .station-art img {
-      width: auto;
-      height: auto;
-      max-width: 100%;
-      max-height: 100%;
-      object-fit: scale-down;
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+      display: block;
     }
     .station-title {
       min-height: 44px;
