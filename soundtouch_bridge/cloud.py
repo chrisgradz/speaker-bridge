@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import urllib.parse
 import urllib.request
 from html import escape
@@ -9,6 +10,7 @@ from typing import Any
 
 from .db import Store
 from .speaker import preset_to_xml
+from .siriusxm import DEFAULT_ENV_FILE, parse_env_file
 
 
 DATA_DIR = Path(__file__).resolve().parent / "data"
@@ -127,6 +129,9 @@ def sources_xml(store: Store | None = None, account_id: str = "") -> str:
     else:
         parts.append(_source_xml("4", "SiriusXM", "38", "SIRIUSXM_EVEREST", ""))
     iheart_accounts = store.source_accounts_for_raw_source("IHEART", account_id) if store else []
+    configured_iheart = configured_iheart_source_account()
+    if not iheart_accounts and configured_iheart:
+        iheart_accounts = [{"source_account": configured_iheart, "name": "iHeart"}]
     if iheart_accounts:
         for idx, account in enumerate(iheart_accounts, start=5 + max(0, len(accounts) - 1)):
             username = escape(account["source_account"])
@@ -135,6 +140,18 @@ def sources_xml(store: Store | None = None, account_id: str = "") -> str:
         parts.append(_source_xml(str(5 + max(0, len(accounts) - 1)), "iHeart", "16", "IHEART", ""))
     parts.append("</sources>")
     return "".join(parts)
+
+
+def configured_iheart_source_account(path: str = "", environ: dict[str, str] | None = None) -> str:
+    env = os.environ if environ is None else environ
+    env_path = path or env.get("SOUNDTOUCH_BRIDGE_SIRIUSXM_ENV_FILE") or DEFAULT_ENV_FILE
+    values = parse_env_file(env_path)
+    return (
+        env.get("SOUNDTOUCH_BRIDGE_IHEART_SOURCE_ACCOUNT")
+        or env.get("IHEART_SOURCE_ACCOUNT")
+        or values.get("SOUNDTOUCH_BRIDGE_IHEART_SOURCE_ACCOUNT")
+        or values.get("IHEART_SOURCE_ACCOUNT", "")
+    ).strip()
 
 
 def _source_xml(source_id: str, name: str, provider_id: str, source_name: str, username: str) -> str:

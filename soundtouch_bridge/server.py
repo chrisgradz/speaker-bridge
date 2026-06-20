@@ -464,6 +464,8 @@ def first_source_account_for_source(store: Store, device_id: str, source: str) -
         source_account = xml_attr(raw, "sourceAccount")
         if source_account:
             return source_account
+    if source == "IHEART":
+        return cloud_api.configured_iheart_source_account()
     return ""
 
 

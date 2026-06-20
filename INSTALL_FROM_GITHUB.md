@@ -132,6 +132,13 @@ SIRIUSXM_USERNAME='your-siriusxm-login'
 SIRIUSXM_PASSWORD='your-siriusxm-password'
 ```
 
+If you want native iHeart push-play experiments to use the same iHeart account
+identity that was present in old Bose presets, add it too:
+
+```bash
+IHEART_SOURCE_ACCOUNT='your-iheart-login-or-source-account'
+```
+
 Then lock it down:
 
 ```bash

@@ -13,6 +13,7 @@ from unittest.mock import patch
 from soundtouch_bridge.db import Store
 from soundtouch_bridge.cloud import (
     account_full,
+    configured_iheart_source_account,
     siriusxm_now_playing,
     siriusxm_station_display_experiment,
     siriusxm_station,
@@ -1042,6 +1043,38 @@ class SiriusXmAuthTests(unittest.TestCase):
         self.assertIn("<sourcename>IHEART</sourcename>", xml)
         self.assertIn("<sourceproviderid>16</sourceproviderid>", xml)
 
+    def test_configured_iheart_source_account_reads_env_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "soundtouch.env")
+            with open(path, "w", encoding="utf-8") as handle:
+                handle.write("IHEART_SOURCE_ACCOUNT='cgrzadziel@example.com'\n")
+
+            account = configured_iheart_source_account(path=path, environ={})
+
+        self.assertEqual(account, "cgrzadziel@example.com")
+
+    def test_account_full_uses_configured_iheart_source_account(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Store(os.path.join(tmp, "state.sqlite3"))
+            try:
+                store.upsert_speaker(
+                    {
+                        "device_id": "speaker-1",
+                        "ip": "192.168.10.22",
+                        "name": "STS1",
+                        "model": "SoundTouch",
+                        "firmware": "27.0",
+                        "account_id": "account-1",
+                    }
+                )
+                with patch.dict(os.environ, {"SOUNDTOUCH_BRIDGE_IHEART_SOURCE_ACCOUNT": "cgrzadziel@example.com"}):
+                    xml = account_full(store, "account-1").decode("utf-8")
+            finally:
+                store.conn.close()
+
+        self.assertIn("<sourcename>IHEART</sourcename>", xml)
+        self.assertIn("<username>cgrzadziel@example.com</username>", xml)
+
     def test_store_preset_xml_wraps_content_item_for_speaker_store(self) -> None:
         raw = (
             '<ContentItem source="SIRIUSXM_EVEREST" type="stationurl" '
@@ -1169,6 +1202,27 @@ class SiriusXmAuthTests(unittest.TestCase):
         self.assertIn("id=&quot;5305&quot;", raw)
         self.assertIn('sourceAccount="cgrzadziel@example.com"', raw)
         self.assertIn("<itemName>WGN AM 720</itemName>", raw)
+
+    def test_build_play_content_item_uses_configured_iheart_source_account(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Store(os.path.join(tmp, "state.sqlite3"))
+            try:
+                with patch.dict(os.environ, {"SOUNDTOUCH_BRIDGE_IHEART_SOURCE_ACCOUNT": "cgrzadziel@example.com"}):
+                    raw = build_play_content_item(
+                        store,
+                        "speaker-1",
+                        "http://ubuntu.example:8000",
+                        {
+                            "source": "IHEART",
+                            "station_id": "5305",
+                            "name": "WGN AM 720",
+                            "image_url": "https://img.example/wgn.png",
+                        },
+                    )
+            finally:
+                store.conn.close()
+
+        self.assertIn('sourceAccount="cgrzadziel@example.com"', raw)
 
     def test_build_play_content_item_rewrites_iheart_descriptor_direct_stream(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
