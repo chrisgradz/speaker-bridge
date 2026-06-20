@@ -40,7 +40,14 @@ from .cloud import (
 )
 from .db import Store
 from .icy import inspect_icy_stream
-from .speaker import import_presets, migrate_speaker, probe_speaker, select_content_item, store_preset
+from .speaker import (
+    import_presets,
+    migrate_speaker,
+    play_preset_slot,
+    probe_speaker,
+    select_content_item,
+    store_preset,
+)
 from .siriusxm import (
     DEFAULT_ENV_FILE,
     SiriusXmCredentials,
@@ -268,17 +275,24 @@ def handle_play_station(req: SoundTouchBridgeHandler, device_id: str) -> None:
         req.send_json({"error": "unknown speaker"}, 404)
         return
     try:
-        raw_content_item = build_play_content_item(
+        body = req.read_json()
+        slot = int(body.get("slot", 0))
+        if slot < 1 or slot > 6:
+            raise ValueError("slot must be 1 through 6")
+        old_preset = speaker_onboard_preset(speaker, slot) or req.server.store.get_preset(device_id, slot)
+        preset = build_play_preset(
             req.server.store,
             device_id,
             req.server.public_base,
-            req.read_json(),
+            body,
         )
-        result = push_station_to_speaker(speaker, raw_content_item)
+        saved = req.server.store.set_preset(device_id, {"device_id": device_id, **preset})
+        remember_siriusxm_station_alias(req.server.store, old_preset, saved)
+        result = play_station_via_preset_slot(speaker, saved)
     except Exception as exc:
         req.send_json({"error": type(exc).__name__, "message": str(exc)}, 400)
         return
-    req.send_json({"device_id": device_id, "play": result, "raw_content_item": raw_content_item})
+    req.send_json({"device_id": device_id, "play": result, "preset": saved})
 
 
 def handle_cloud_responses(req: SoundTouchBridgeHandler, account_id: str) -> None:
@@ -523,6 +537,83 @@ def build_play_content_item(store: Store, device_id: str, base_url: str, body: J
     raise ValueError(f"unsupported source: {source}")
 
 
+def build_play_preset(store: Store, device_id: str, base_url: str, body: Json) -> Json:
+    source = str(body.get("source", "")).strip().upper()
+    name = str(body.get("name", "")).strip()
+    station_id = str(body.get("station_id", "")).strip()
+    image_url = str(body.get("image_url", "")).strip()
+    stream_url = str(body.get("stream_url", "")).strip()
+    slot = int(body.get("slot", 0))
+    if slot < 1 or slot > 6:
+        raise ValueError("slot must be 1 through 6")
+    if not source:
+        raise ValueError("source is required")
+    if not name:
+        raise ValueError("name is required")
+    if source == "SIRIUSXM":
+        if not station_id:
+            raise ValueError("station_id is required for SiriusXM")
+        station_slug = station_id.rstrip("/").split("/")[-1].split("?", 1)[0]
+        existing_channel = store.get_siriusxm_channel(station_slug)
+        store.upsert_siriusxm_channel(
+            station_slug,
+            {
+                "name": name,
+                "entity_url": str(body.get("entity_url", "")).strip() or existing_channel.get("entity_url", ""),
+                "stream_url": existing_channel.get("stream_url", ""),
+            },
+        )
+        source_account = first_siriusxm_source_account(store, device_id)
+        return {
+            "slot": slot,
+            "source": "SIRIUSXM",
+            "name": name,
+            "station_id": f"{station_slug}?preset_play=True",
+            "stream_url": "",
+            "image_url": image_url,
+            "raw_content_item": build_siriusxm_content_item(station_slug, name, image_url, source_account),
+        }
+    if source == "TUNEIN":
+        if not station_id:
+            raise ValueError("station_id is required for TuneIn")
+        return {
+            "slot": slot,
+            "source": "TUNEIN",
+            "name": name,
+            "station_id": station_id,
+            "stream_url": "",
+            "image_url": image_url,
+            "raw_content_item": "",
+        }
+    if source == "IHEART":
+        if not station_id:
+            raise ValueError("station_id is required for iHeart")
+        return {
+            "slot": slot,
+            "source": "LOCAL_INTERNET_RADIO",
+            "name": name,
+            "station_id": "",
+            "stream_url": iheart_station_descriptor_url(base_url, station_id, name, image_url),
+            "image_url": image_url,
+            "raw_content_item": "",
+        }
+    if source == "LOCAL_INTERNET_RADIO":
+        if not stream_url:
+            raise ValueError("stream_url is required for direct streams")
+        if not (stream_url.startswith("http://") or stream_url.startswith("https://")):
+            raise ValueError("stream_url must start with http:// or https://")
+        return {
+            "slot": slot,
+            "source": "LOCAL_INTERNET_RADIO",
+            "name": name,
+            "station_id": "",
+            "stream_url": stream_url,
+            "image_url": image_url,
+            "raw_content_item": "",
+        }
+    raise ValueError(f"unsupported source: {source}")
+
+
 def build_basic_content_item(source: str, location: str, name: str, image_url: str = "") -> str:
     item = (
         f'<ContentItem source="{escape(source)}" type="stationurl" '
@@ -546,6 +637,28 @@ def push_station_to_speaker(speaker: Json, raw_content_item: str) -> Json:
         return {"attempted": True, "ok": False, "message": message}
     print(f"[push-play] {speaker.get('device_id', '')} sent /select", flush=True)
     return {"attempted": True, "ok": True, "message": "sent to speaker"}
+
+
+def play_station_via_preset_slot(speaker: Json, preset: Json) -> Json:
+    ip = str(speaker.get("ip", "")).strip()
+    slot = int(preset.get("slot", 0))
+    if not ip:
+        return {"attempted": False, "ok": False, "slot": slot, "message": "speaker IP is not known"}
+    try:
+        store_preset(ip, preset)
+        time.sleep(0.2)
+        play_preset_slot(ip, slot)
+    except Exception as exc:
+        message = f"{type(exc).__name__}: {exc}"
+        print(f"[push-play] {speaker.get('device_id', '')} slot={slot} failed: {message}", flush=True)
+        return {"attempted": True, "ok": False, "slot": slot, "message": message}
+    print(f"[push-play] {speaker.get('device_id', '')} stored slot={slot} and pressed preset", flush=True)
+    return {
+        "attempted": True,
+        "ok": True,
+        "slot": slot,
+        "message": f"stored on speaker and pressed preset {slot}",
+    }
 
 
 def rewrite_siriusxm_preset_content_item(preset: Json, experiment: bool) -> Json:
@@ -2141,6 +2254,18 @@ PLAY_HTML = """<!doctype html>
       <label>Speaker
         <select id="speakerSelect"></select>
       </label>
+      <label>Play Through Slot
+        <select id="playSlot">
+          <option value="">Select preset slot</option>
+          <option value="1">Slot 1</option>
+          <option value="2">Slot 2</option>
+          <option value="3">Slot 3</option>
+          <option value="4">Slot 4</option>
+          <option value="5">Slot 5</option>
+          <option value="6">Slot 6</option>
+        </select>
+      </label>
+      <div class="meta">This stores the station in the selected slot, then plays that preset.</div>
       <div class="toolbar source-tabs" id="sourceTabs">
         <button data-source="SIRIUSXM" class="active">SiriusXM</button>
         <button data-source="TUNEIN" class="secondary">TuneIn</button>
@@ -2262,7 +2387,7 @@ PLAY_HTML = """<!doctype html>
             <div class="station-art">URL</div>
             <label>Name<input data-role="direct-name" placeholder="Station name"></label>
             <label>Stream URL<input data-role="direct-url" placeholder="https://example.com/stream.mp3"></label>
-            <button data-action="push-direct">Push</button>
+            <button data-action="push-direct">Store &amp; Play</button>
           </div>`;
         grid.querySelector('[data-action="push-direct"]').onclick = pushDirectStream;
         return;
@@ -2283,7 +2408,7 @@ PLAY_HTML = """<!doctype html>
               <div class="station-title">${escapeHtml(station.name || station.station_id)}</div>
               <div class="meta">${escapeHtml(station.description || station.station_id || '')}</div>
             </div>
-            <button data-action="push" data-index="${index}">Push</button>
+            <button data-action="push" data-index="${index}">Store &amp; Play</button>
           </article>`;
       }).join('');
       grid.querySelectorAll('[data-action="push"]').forEach((button) => {
@@ -2306,7 +2431,13 @@ PLAY_HTML = """<!doctype html>
         setStatus('Select a speaker', 'error');
         return;
       }
+      const slot = Number($('playSlot').value);
+      if (!slot) {
+        setStatus('Select a preset slot to store and play through', 'error');
+        return;
+      }
       const payload = {
+        slot,
         source: station.source,
         station_id: station.station_id || '',
         name: station.name || '',
@@ -2318,7 +2449,7 @@ PLAY_HTML = """<!doctype html>
         method: 'POST',
         body: JSON.stringify(payload),
       });
-      setStatus(data.play && data.play.ok ? `Playing ${payload.name}` : data.play.message, data.play && data.play.ok ? 'ok' : 'error');
+      setStatus(data.play && data.play.ok ? `Stored ${payload.name} in slot ${slot} and started playback` : data.play.message, data.play && data.play.ok ? 'ok' : 'error');
     }
 
     function escapeHtml(value) {
