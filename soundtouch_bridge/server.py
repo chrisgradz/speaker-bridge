@@ -526,7 +526,7 @@ def build_play_content_item(store: Store, device_id: str, base_url: str, body: J
             raise ValueError("station_id is required for iHeart")
         return build_basic_content_item(
             "LOCAL_INTERNET_RADIO",
-            iheart_station_descriptor_url(base_url, station_id, name, image_url),
+            iheart_proxy_stream_url(base_url, station_id),
             name,
             image_url,
         )
