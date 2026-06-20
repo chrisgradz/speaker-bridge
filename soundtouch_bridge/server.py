@@ -992,7 +992,10 @@ def handle_iheart_search(req: SoundTouchBridgeHandler) -> None:
         req.send_json({"stations": []})
         return
     try:
-        stations = search_iheart_stations(query)
+        stations = [
+            iheart_station_with_proxy_urls(req.server.public_base, station)
+            for station in search_iheart_stations(query)
+        ]
     except Exception as exc:
         req.send_json({"error": "iheart_search_failed", "message": str(exc)}, 502)
         return
@@ -1161,6 +1164,18 @@ def normalize_iheart_search_station(item: Any) -> Json:
         "name": name,
         "description": description,
         "image_url": str(item.get("logo") or item.get("newlogo") or "").strip(),
+    }
+
+
+def iheart_station_with_proxy_urls(base_url: str, station: Json) -> Json:
+    station_id = str(station.get("station_id", "")).strip()
+    if not station_id:
+        return station
+    stream_url = iheart_proxy_stream_url(base_url, station_id)
+    return {
+        **station,
+        "stream_url": stream_url,
+        "proxy_stream_url": stream_url,
     }
 
 

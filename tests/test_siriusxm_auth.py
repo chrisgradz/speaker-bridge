@@ -44,6 +44,7 @@ from soundtouch_bridge.server import (
     iheart_proxy_stream_url,
     iheart_station_descriptor,
     iheart_station_descriptor_url,
+    iheart_station_with_proxy_urls,
     normalize_iheart_search_station,
     normalize_siriusxm_catalog_channel,
     maybe_override_siriusxm_preset_press,
@@ -1378,6 +1379,21 @@ class SiriusXmAuthTests(unittest.TestCase):
         self.assertIn("keywords=big+95.5", requested_url)
         self.assertEqual(stations[0]["station_id"], "8731")
         self.assertEqual(stations[0]["name"], "Big 95.5")
+
+    def test_iheart_station_with_proxy_urls_uses_audio_proxy_for_play_search(self) -> None:
+        station = iheart_station_with_proxy_urls(
+            "http://ubuntu.example:8000",
+            {
+                "station_id": "8731",
+                "name": "Big 95.5",
+                "description": "Chicago's New Country",
+                "image_url": "https://i.iheart.com/logo.png",
+            },
+        )
+
+        self.assertEqual(station["stream_url"], "http://ubuntu.example:8000/iheart/proxy/8731/stream.aac")
+        self.assertEqual(station["proxy_stream_url"], "http://ubuntu.example:8000/iheart/proxy/8731/stream.aac")
+        self.assertNotIn("/iheart/stations/8731/station.json", station["stream_url"])
 
     def test_resolve_iheart_stream_url_prefers_secure_shoutcast_stream(self) -> None:
         response = {
