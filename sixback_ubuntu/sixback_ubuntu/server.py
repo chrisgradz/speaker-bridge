@@ -158,6 +158,8 @@ class SixBackServer(ThreadingHTTPServer):
         )
         self.route("GET", r"/api/tunein/search", handle_tunein_search)
         self.route("GET", r"/api/tunein/stations/(?P<station_id>[^/]+)/icy-debug", handle_tunein_icy_debug)
+        self.route("GET", r"/api/iheart/search", handle_iheart_search)
+        self.route("GET", r"/api/iheart/stations/(?P<station_id>[^/]+)/stream", handle_iheart_station_stream)
         self.route(
             "GET",
             r"/api/siriusxm/channels/(?P<station_id>[^/]+)/now-playing-debug",
@@ -343,12 +345,14 @@ def normalize_admin_preset(body: Json, slot: int) -> Json:
     stream_url = str(body.get("stream_url", "")).strip()
     image_url = str(body.get("image_url", "")).strip()
     raw_content_item = str(body.get("raw_content_item", "")).strip()
-    if source not in {"TUNEIN", "LOCAL_INTERNET_RADIO", "SIRIUSXM"}:
-        raise ValueError("source must be TUNEIN, LOCAL_INTERNET_RADIO, or SIRIUSXM")
+    if source not in {"TUNEIN", "LOCAL_INTERNET_RADIO", "SIRIUSXM", "OPAQUE"}:
+        raise ValueError("source must be TUNEIN, LOCAL_INTERNET_RADIO, SIRIUSXM, or OPAQUE")
     if not name:
         raise ValueError("name is required")
     if source == "TUNEIN" and not station_id:
         raise ValueError("station_id is required for TuneIn presets")
+    if source == "OPAQUE" and not raw_content_item:
+        raise ValueError("raw_content_item is required for preserved presets")
     if source == "LOCAL_INTERNET_RADIO":
         if not stream_url:
             raise ValueError("stream_url is required for direct stream presets")
@@ -361,7 +365,7 @@ def normalize_admin_preset(body: Json, slot: int) -> Json:
         "station_id": station_id if source in {"TUNEIN", "SIRIUSXM"} else "",
         "stream_url": stream_url if source == "LOCAL_INTERNET_RADIO" else "",
         "image_url": image_url,
-        "raw_content_item": raw_content_item if source == "SIRIUSXM" else "",
+        "raw_content_item": raw_content_item if source in {"SIRIUSXM", "OPAQUE"} else "",
     }
 
 
@@ -788,6 +792,28 @@ def handle_tunein_search(req: SixBackHandler) -> None:
     req.send_json({"stations": stations})
 
 
+def handle_iheart_search(req: SixBackHandler) -> None:
+    query = parse_qs(urlparse(req.path).query).get("q", [""])[0].strip()
+    if not query:
+        req.send_json({"stations": []})
+        return
+    try:
+        stations = search_iheart_stations(query)
+    except Exception as exc:
+        req.send_json({"error": "iheart_search_failed", "message": str(exc)}, 502)
+        return
+    req.send_json({"stations": stations})
+
+
+def handle_iheart_station_stream(req: SixBackHandler, station_id: str) -> None:
+    try:
+        stream_url = resolve_iheart_stream_url(station_id)
+    except Exception as exc:
+        req.send_json({"error": "iheart_stream_failed", "message": str(exc)}, 502)
+        return
+    req.send_json({"station_id": station_id, "stream_url": stream_url})
+
+
 def search_tunein_stations(query: str, limit: int = 60) -> list[Json]:
     url = "http://opml.radiotime.com/Search.ashx?" + urllib.parse.urlencode(
         {"query": query, "types": "station", "render": "json"}
@@ -834,6 +860,75 @@ def normalize_tunein_search_station(item: Any) -> Json:
         "description": str(item.get("subtext") or item.get("description") or "").strip(),
         "image_url": str(item.get("image") or item.get("logo") or "").strip(),
     }
+
+
+def search_iheart_stations(query: str, limit: int = 60) -> list[Json]:
+    url = "https://api.iheart.com/api/v1/catalog/searchAll?" + urllib.parse.urlencode({"keywords": query})
+    with urllib.request.urlopen(url, timeout=8) as resp:
+        data = json.loads(resp.read().decode("utf-8", "replace"))
+    items = data.get("stations", [])
+    if not isinstance(items, list):
+        return []
+    stations: list[Json] = []
+    seen: set[str] = set()
+    for item in items:
+        station = normalize_iheart_search_station(item)
+        station_id = station.get("station_id", "")
+        if not station_id or station_id in seen:
+            continue
+        stations.append(station)
+        seen.add(station_id)
+        if len(stations) >= limit:
+            break
+    return stations
+
+
+def normalize_iheart_search_station(item: Any) -> Json:
+    if not isinstance(item, dict):
+        return {}
+    station_id = str(item.get("id") or item.get("station_id") or "").strip()
+    name = str(item.get("name") or "").strip()
+    if not station_id or not name:
+        return {}
+    description = str(item.get("description") or "").strip()
+    city = str(item.get("city") or "").strip()
+    state = str(item.get("state") or "").strip()
+    if not description:
+        description = ", ".join(part for part in (city, state) if part)
+    return {
+        "station_id": station_id,
+        "name": name,
+        "description": description,
+        "image_url": str(item.get("logo") or item.get("newlogo") or "").strip(),
+    }
+
+
+def resolve_iheart_stream_url(station_id: str) -> str:
+    station_id = station_id.strip()
+    if not station_id.isdigit():
+        raise ValueError("iHeart station id must be numeric")
+    url = f"https://api.iheart.com/api/v2/content/liveStations/{urllib.parse.quote(station_id)}"
+    with urllib.request.urlopen(url, timeout=8) as resp:
+        data = json.loads(resp.read().decode("utf-8", "replace"))
+    hits = data.get("hits", [])
+    if not isinstance(hits, list) or not hits:
+        raise ValueError("iHeart station was not found")
+    streams = hits[0].get("streams", {})
+    if not isinstance(streams, dict):
+        raise ValueError("iHeart station has no streams")
+    for key in (
+        "secure_shoutcast_stream",
+        "shoutcast_stream",
+        "secure_hls_stream",
+        "hls_stream",
+        "stw_stream",
+        "secure_pls_stream",
+        "pls_stream",
+    ):
+        stream_url = str(streams.get(key) or "").strip()
+        if stream_url:
+            return stream_url
+    raise ValueError("iHeart station has no playable stream URL")
 
 
 def first_siriusxm_image_url(value: Any) -> str:
@@ -1870,6 +1965,15 @@ ADMIN_HTML = """<!doctype html>
         <input id="tuneinStationSearch" placeholder="Search TuneIn stations">
       </label>
       <div class="speaker-list" id="tuneinStationList"></div>
+      <hr>
+      <h2>iHeart</h2>
+      <div class="toolbar">
+        <button class="secondary" id="searchIHeartStations">Search Stations</button>
+      </div>
+      <label class="wide">Station Search
+        <input id="iheartStationSearch" placeholder="Search iHeart stations">
+      </label>
+      <div class="speaker-list" id="iheartStationList"></div>
     </section>
     <section>
       <h2 id="selectedTitle">Presets</h2>
@@ -1883,7 +1987,7 @@ ADMIN_HTML = """<!doctype html>
     </section>
   </main>
   <script>
-    const state = { speakers: [], selected: null, presets: [], sirius: null, siriusChannels: [], tuneinStations: [], cardNotices: {} };
+    const state = { speakers: [], selected: null, presets: [], sirius: null, siriusChannels: [], tuneinStations: [], iheartStations: [], cardNotices: {} };
     const $ = (id) => document.getElementById(id);
 
     async function api(path, options = {}) {
@@ -2008,6 +2112,7 @@ ADMIN_HTML = """<!doctype html>
                 <option value="TUNEIN">TuneIn</option>
                 <option value="LOCAL_INTERNET_RADIO">Direct Stream</option>
                 <option value="SIRIUSXM">SiriusXM</option>
+                <option value="OPAQUE">Preserved</option>
               </select>
             </label>
             <label>Name
@@ -2025,6 +2130,9 @@ ADMIN_HTML = """<!doctype html>
             <label class="wide stream">Stream URL
               <input data-field="stream_url" value="${escapeAttr(preset.stream_url || '')}">
             </label>
+            <label class="wide stream iheart-picker-row">iHeart Station
+              <select data-role="iheart-picker"></select>
+            </label>
             <label class="wide">Image URL
               <input data-field="image_url" value="${escapeAttr(preset.image_url || '')}">
             </label>
@@ -2034,6 +2142,7 @@ ADMIN_HTML = """<!doctype html>
           <div class="toolbar">
             <button data-action="save">Save</button>
             <button class="secondary" data-action="pick-tunein">Use Station</button>
+            <button class="secondary" data-action="pick-iheart">Use iHeart</button>
             <button class="secondary" data-action="pick-sirius">Use Channel</button>
             <button class="secondary" data-action="refresh-sirius">Refresh SiriusXM</button>
             <button class="danger" data-action="clear">Clear</button>
@@ -2049,9 +2158,11 @@ ADMIN_HTML = """<!doctype html>
         grid.appendChild(card);
         card.querySelector('[data-field="source"]').value =
           preset.source === 'LOCAL_INTERNET_RADIO' ? 'LOCAL_INTERNET_RADIO' :
-          preset.source === 'SIRIUSXM' ? 'SIRIUSXM' : 'TUNEIN';
+          preset.source === 'SIRIUSXM' ? 'SIRIUSXM' :
+          preset.source === 'OPAQUE' ? 'OPAQUE' : 'TUNEIN';
         populateCopyOptions(card);
         populateTuneInPicker(card);
+        populateIHeartPicker(card);
         populateSiriusPicker(card);
         syncSourceFields(card);
         applyCardNotice(card);
@@ -2062,6 +2173,7 @@ ADMIN_HTML = """<!doctype html>
         };
         card.querySelector('[data-action="save"]').onclick = () => savePreset(card);
         card.querySelector('[data-action="pick-tunein"]').onclick = () => pickTuneInStation(card);
+        card.querySelector('[data-action="pick-iheart"]').onclick = () => pickIHeartStation(card);
         card.querySelector('[data-action="pick-sirius"]').onclick = () => pickSiriusChannel(card);
         card.querySelector('[data-action="refresh-sirius"]').onclick = () => refreshSiriusPreset(card);
         card.querySelector('[data-action="clear"]').onclick = () => clearPreset(card);
@@ -2076,11 +2188,18 @@ ADMIN_HTML = """<!doctype html>
       card.querySelector('.sirius').style.display = source === 'SIRIUSXM' ? 'grid' : 'none';
       card.querySelector('.stream').style.display = source === 'LOCAL_INTERNET_RADIO' ? 'grid' : 'none';
       card.querySelector('[data-action="pick-tunein"]').style.display = source === 'TUNEIN' ? 'inline-flex' : 'none';
+      card.querySelector('[data-action="pick-iheart"]').style.display = source === 'LOCAL_INTERNET_RADIO' ? 'inline-flex' : 'none';
       card.querySelector('[data-action="pick-sirius"]').style.display = source === 'SIRIUSXM' ? 'inline-flex' : 'none';
       card.querySelector('[data-action="refresh-sirius"]').style.display = source === 'SIRIUSXM' ? 'inline-flex' : 'none';
       const msg = card.querySelector('[data-role="card-status"]');
       if (applyCardNotice(card)) return;
-      if (source === 'SIRIUSXM' && raw.includes('/experiments/siriusxm/display/playback/station/')) {
+      if (source === 'OPAQUE' && raw.includes('source="IHEART"')) {
+        msg.textContent = 'Preserved iHeart preset.';
+        msg.className = 'status ok';
+      } else if (source === 'OPAQUE') {
+        msg.textContent = 'Preserved imported preset. Copy or leave unchanged unless you know this service still works.';
+        msg.className = 'status warn';
+      } else if (source === 'SIRIUSXM' && raw.includes('/experiments/siriusxm/display/playback/station/')) {
         msg.textContent = 'SiriusXM display metadata experiment active.';
         msg.className = 'status warn';
       } else if (source === 'SIRIUSXM' && raw.includes('SIRIUSXM_EVEREST')) {
@@ -2095,6 +2214,11 @@ ADMIN_HTML = """<!doctype html>
         msg.textContent = state.tuneinStations.length
           ? 'Choose a station, use it, then save the preset.'
           : 'Search TuneIn stations, then choose one and save the preset.';
+        msg.className = 'status';
+      } else if (source === 'LOCAL_INTERNET_RADIO') {
+        msg.textContent = state.iheartStations.length
+          ? 'Choose an iHeart station, use it, then save the direct stream preset.'
+          : 'Search iHeart stations or enter a direct stream URL.';
         msg.className = 'status';
       } else {
         msg.textContent = '';
@@ -2159,11 +2283,40 @@ ADMIN_HTML = """<!doctype html>
       setStatus(`Loaded ${state.tuneinStations.length} TuneIn station(s)`, 'ok');
     }
 
+    async function searchIHeartStations() {
+      const query = $('iheartStationSearch').value.trim();
+      if (!query) {
+        setStatus('Enter an iHeart station search first', 'warn');
+        return;
+      }
+      const data = await api(`/api/iheart/search?q=${encodeURIComponent(query)}`);
+      state.iheartStations = data.stations || [];
+      renderIHeartStations();
+      document.querySelectorAll('.preset-card').forEach((card) => {
+        populateIHeartPicker(card);
+        syncSourceFields(card);
+      });
+      setStatus(`Loaded ${state.iheartStations.length} iHeart station(s)`, 'ok');
+    }
+
     function renderTuneInStations() {
       const list = $('tuneinStationList');
       const stations = state.tuneinStations.slice(0, 60);
       if (!stations.length) {
         list.innerHTML = '<div class="meta">Search to browse TuneIn stations.</div>';
+        return;
+      }
+      list.innerHTML = stations.map((station) => {
+        const detail = station.description ? `${station.station_id || ''} - ${station.description}` : station.station_id || '';
+        return `<div class="speaker-button"><strong>${escapeHtml(station.name || station.station_id)}</strong><div class="meta">${escapeHtml(detail)}</div></div>`;
+      }).join('');
+    }
+
+    function renderIHeartStations() {
+      const list = $('iheartStationList');
+      const stations = state.iheartStations.slice(0, 60);
+      if (!stations.length) {
+        list.innerHTML = '<div class="meta">Search to browse iHeart stations.</div>';
         return;
       }
       list.innerHTML = stations.map((station) => {
@@ -2189,6 +2342,22 @@ ADMIN_HTML = """<!doctype html>
       }
       if (current && [...picker.options].some((option) => option.value === current)) {
         picker.value = current;
+      }
+    }
+
+    function populateIHeartPicker(card) {
+      const picker = card.querySelector('[data-role="iheart-picker"]');
+      if (!picker) return;
+      picker.innerHTML = '<option value="">Select station</option>';
+      for (const station of state.iheartStations) {
+        const option = document.createElement('option');
+        option.value = station.station_id || '';
+        option.textContent = station.description
+          ? `${station.name || station.station_id} - ${station.description}`
+          : `${station.name || station.station_id}`;
+        option.dataset.name = station.name || '';
+        option.dataset.imageUrl = station.image_url || '';
+        picker.appendChild(option);
       }
     }
 
@@ -2251,6 +2420,35 @@ ADMIN_HTML = """<!doctype html>
       syncSourceFields(card);
       status.textContent = 'Station ready; save this preset to assign it.';
       status.className = 'status ok';
+    }
+
+    async function pickIHeartStation(card) {
+      const picker = card.querySelector('[data-role="iheart-picker"]');
+      const option = picker.selectedOptions[0];
+      const status = card.querySelector('[data-role="card-status"]');
+      if (!option || !option.value) {
+        status.textContent = 'Select an iHeart station first';
+        status.className = 'status error';
+        return;
+      }
+      status.textContent = 'Resolving iHeart stream...';
+      status.className = 'status';
+      try {
+        const data = await api(`/api/iheart/stations/${encodeURIComponent(option.value)}/stream`);
+        card.querySelector('[data-field="source"]').value = 'LOCAL_INTERNET_RADIO';
+        card.querySelector('[data-field="station_id"]').value = '';
+        card.querySelector('[data-field="name"]').value = option.dataset.name || option.textContent;
+        card.querySelector('[data-field="image_url"]').value = option.dataset.imageUrl || '';
+        card.querySelector('[data-field="entity_url"]').value = '';
+        card.querySelector('[data-field="stream_url"]').value = data.stream_url || '';
+        card.querySelector('[data-field="raw_content_item"]').value = '';
+        syncSourceFields(card);
+        status.textContent = 'iHeart stream ready; save this preset to assign it.';
+        status.className = 'status ok';
+      } catch (err) {
+        status.textContent = err.message;
+        status.className = 'status error';
+      }
     }
 
     function populateCopyOptions(card) {
@@ -2359,6 +2557,10 @@ ADMIN_HTML = """<!doctype html>
     $('searchTuneInStations').onclick = () => searchTuneInStations().catch((err) => setStatus(err.message, 'error'));
     $('tuneinStationSearch').onkeydown = (event) => {
       if (event.key === 'Enter') searchTuneInStations().catch((err) => setStatus(err.message, 'error'));
+    };
+    $('searchIHeartStations').onclick = () => searchIHeartStations().catch((err) => setStatus(err.message, 'error'));
+    $('iheartStationSearch').onkeydown = (event) => {
+      if (event.key === 'Enter') searchIHeartStations().catch((err) => setStatus(err.message, 'error'));
     };
     $('loginSirius').onclick = async () => {
       try {

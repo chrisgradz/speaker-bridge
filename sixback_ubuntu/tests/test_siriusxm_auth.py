@@ -36,15 +36,18 @@ from sixback_ubuntu.sixback_ubuntu.server import (
     build_siriusxm_content_item,
     rewrite_siriusxm_preset_content_item,
     handle_siriusxm_now_playing_debug,
+    normalize_iheart_search_station,
     normalize_siriusxm_catalog_channel,
     maybe_override_siriusxm_preset_press,
     normalize_tunein_search_station,
+    resolve_iheart_stream_url,
     prepare_admin_preset,
     pressed_preset_slot,
     remember_siriusxm_station_alias,
     resolve_siriusxm_stream_url,
     resolve_siriusxm_station_alias,
     sanitize_siriusxm_error,
+    search_iheart_stations,
     search_tunein_stations,
     siriusxm_metadata_proxy_debug_payload,
     tunein_icy_debug_payload,
@@ -1077,6 +1080,68 @@ class SiriusXmAuthTests(unittest.TestCase):
         self.assertEqual(stations[0]["station_id"], "s17947")
         self.assertEqual(stations[0]["name"], "The Answer Chicago")
 
+    def test_normalize_iheart_search_station_extracts_station_fields(self) -> None:
+        station = normalize_iheart_search_station(
+            {
+                "id": 8731,
+                "name": "Big 95.5",
+                "description": "Chicago's New Country",
+                "logo": "https://i.iheart.com/v3/re/assets.brands/63fd2da6eb854409caefdcd3",
+            }
+        )
+
+        self.assertEqual(
+            station,
+            {
+                "station_id": "8731",
+                "name": "Big 95.5",
+                "description": "Chicago's New Country",
+                "image_url": "https://i.iheart.com/v3/re/assets.brands/63fd2da6eb854409caefdcd3",
+            },
+        )
+
+    def test_search_iheart_stations_uses_catalog_endpoint(self) -> None:
+        response = {
+            "stations": [
+                {
+                    "id": 8731,
+                    "name": "Big 95.5",
+                    "description": "Chicago's New Country",
+                    "logo": "https://i.iheart.com/logo.png",
+                }
+            ]
+        }
+
+        with patch("sixback_ubuntu.sixback_ubuntu.server.urllib.request.urlopen") as urlopen:
+            urlopen.return_value.__enter__.return_value.read.return_value = json.dumps(response).encode("utf-8")
+
+            stations = search_iheart_stations("big 95.5")
+
+        requested_url = urlopen.call_args.args[0]
+        self.assertIn("api.iheart.com/api/v1/catalog/searchAll", requested_url)
+        self.assertIn("keywords=big+95.5", requested_url)
+        self.assertEqual(stations[0]["station_id"], "8731")
+        self.assertEqual(stations[0]["name"], "Big 95.5")
+
+    def test_resolve_iheart_stream_url_prefers_secure_shoutcast_stream(self) -> None:
+        response = {
+            "hits": [
+                {
+                    "streams": {
+                        "secure_hls_stream": "https://stream.example/hls.m3u8",
+                        "secure_shoutcast_stream": "https://stream.example/live",
+                    }
+                }
+            ]
+        }
+
+        with patch("sixback_ubuntu.sixback_ubuntu.server.urllib.request.urlopen") as urlopen:
+            urlopen.return_value.__enter__.return_value.read.return_value = json.dumps(response).encode("utf-8")
+
+            stream_url = resolve_iheart_stream_url("8731")
+
+        self.assertEqual(stream_url, "https://stream.example/live")
+
     def test_siriusxm_metadata_proxy_debug_identifies_hls_not_icy(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             store = Store(os.path.join(tmp, "state.sqlite3"))
@@ -1288,6 +1353,13 @@ class SiriusXmAuthTests(unittest.TestCase):
         self.assertIn("data-action=\"pick-tunein\"", ADMIN_HTML)
         self.assertIn("Use Station", ADMIN_HTML)
 
+    def test_admin_ui_exposes_iheart_station_picker(self) -> None:
+        self.assertIn("iheartStationSearch", ADMIN_HTML)
+        self.assertIn("searchIHeartStations", ADMIN_HTML)
+        self.assertIn("data-action=\"pick-iheart\"", ADMIN_HTML)
+        self.assertIn("Use iHeart", ADMIN_HTML)
+        self.assertIn("Preserved iHeart preset.", ADMIN_HTML)
+
     def test_tunein_search_route_is_registered(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             store = Store(os.path.join(tmp, "state.sqlite3"))
@@ -1302,6 +1374,25 @@ class SiriusXmAuthTests(unittest.TestCase):
                 store.conn.close()
 
         self.assertTrue(matched)
+
+    def test_iheart_routes_are_registered(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Store(os.path.join(tmp, "state.sqlite3"))
+            server = SixBackServer(("127.0.0.1", 0), store, "http://ubuntu.example:8000")
+            try:
+                paths = [
+                    "/api/iheart/search",
+                    "/api/iheart/stations/8731/stream",
+                ]
+                matched = {
+                    path: any(method == "GET" and pattern.fullmatch(path) for method, pattern, _handler in server.routes)
+                    for path in paths
+                }
+            finally:
+                server.server_close()
+                store.conn.close()
+
+        self.assertEqual(matched, {"/api/iheart/search": True, "/api/iheart/stations/8731/stream": True})
 
     def test_admin_ui_persists_save_confirmation_after_reload(self) -> None:
         self.assertIn("cardNotices", ADMIN_HTML)
