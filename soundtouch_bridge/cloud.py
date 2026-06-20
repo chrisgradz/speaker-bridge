@@ -246,10 +246,11 @@ def siriusxm_station(
     station_id: str,
     base_url: str,
     metadata: dict[str, str] | None = None,
+    display_name: str = "",
 ) -> bytes:
     preset = store.find_preset_by_source_station("SIRIUSXM", station_id)
     channel = store.get_siriusxm_channel(station_id)
-    name = channel.get("name") or (preset.get("name") if preset else station_id)
+    name = channel.get("name") or (preset.get("name") if preset else "") or display_name or station_id
     image = preset.get("image_url") if preset else ""
     stream_url = f"{base_url}/siriusxm/proxy/{urllib.parse.quote(station_id)}/playlist.m3u8"
     needs_auth = not bool(channel.get("stream_url"))

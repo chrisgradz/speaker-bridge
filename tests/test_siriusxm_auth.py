@@ -1102,10 +1102,27 @@ class SiriusXmAuthTests(unittest.TestCase):
                 store.conn.close()
 
         self.assertIn('<ContentItem source="SIRIUSXM_EVEREST" type="stationurl"', raw)
-        self.assertIn('location="/playback/station/big80s?preset_play=True"', raw)
+        self.assertIn('location="/playback/station/big80s?preset_play=True&amp;name=80s+on+8"', raw)
         self.assertIn('sourceAccount="source-account-123"', raw)
         self.assertNotIn("siriusxm/proxy/big80s/playlist.m3u8", raw)
         self.assertEqual(channels, [])
+
+    def test_siriusxm_station_uses_display_name_hint_when_channel_is_not_persisted(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Store(os.path.join(tmp, "state.sqlite3"))
+            try:
+                payload = json.loads(
+                    siriusxm_station(
+                        store,
+                        "yachtrockradio",
+                        "http://ubuntu.example:8000",
+                        display_name="Yacht Rock Radio",
+                    )
+                )
+            finally:
+                store.conn.close()
+
+        self.assertEqual(payload["name"], "Yacht Rock Radio")
 
     def test_push_station_to_speaker_selects_content_item(self) -> None:
         speaker = {"device_id": "speaker-1", "ip": "192.168.1.50"}

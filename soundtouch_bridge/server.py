@@ -455,10 +455,19 @@ def first_siriusxm_source_account(store: Store, device_id: str) -> str:
     return ""
 
 
-def build_siriusxm_content_item(station_id: str, name: str, image_url: str = "", source_account: str = "") -> str:
-    location = f"/playback/station/{escape(station_id)}?preset_play=True"
+def build_siriusxm_content_item(
+    station_id: str,
+    name: str,
+    image_url: str = "",
+    source_account: str = "",
+    include_display_name_hint: bool = False,
+) -> str:
+    query: dict[str, str] = {"preset_play": "True"}
+    if include_display_name_hint and name:
+        query["name"] = name
+    location = f"/playback/station/{station_id}?{urllib.parse.urlencode(query)}"
     item = (
-        f'<ContentItem source="SIRIUSXM_EVEREST" type="stationurl" location="{location}" '
+        f'<ContentItem source="SIRIUSXM_EVEREST" type="stationurl" location="{escape(location)}" '
         f'sourceAccount="{escape(source_account)}" isPresetable="true">'
         f"<itemName>{escape(name)}</itemName>"
     )
@@ -503,7 +512,13 @@ def build_play_content_item(store: Store, device_id: str, base_url: str, body: J
             raise ValueError("station_id is required for SiriusXM")
         station_id = station_id.rstrip("/").split("/")[-1].split("?", 1)[0]
         source_account = first_siriusxm_source_account(store, device_id)
-        return build_siriusxm_content_item(station_id, name, image_url, source_account)
+        return build_siriusxm_content_item(
+            station_id,
+            name,
+            image_url,
+            source_account,
+            include_display_name_hint=True,
+        )
     if source == "IHEART":
         if not station_id:
             raise ValueError("station_id is required for iHeart")
@@ -1339,6 +1354,8 @@ def handle_siriusxm_availability(req: SoundTouchBridgeHandler) -> None:
 def handle_siriusxm_station(req: SoundTouchBridgeHandler, station_id: str) -> None:
     requested_station_id = station_id
     station_id = resolve_siriusxm_station_alias(req.server.store, station_id)
+    query = parse_qs(urlparse(req.path).query)
+    display_name = query.get("name", [""])[0].strip()
     metadata = {}
     channel = req.server.store.get_siriusxm_channel(station_id)
     if req.server.siriusxm.credentials.configured:
@@ -1347,7 +1364,7 @@ def handle_siriusxm_station(req: SoundTouchBridgeHandler, station_id: str) -> No
         except Exception as exc:
             message = sanitize_siriusxm_error(str(exc), req.server.siriusxm.credentials)
             capture_cloud_response(req, "siriusxm", f"resolver metadata failed station={requested_station_id}->{station_id}: {message}")
-    body = siriusxm_station(req.server.store, station_id, req.server.public_base, metadata)
+    body = siriusxm_station(req.server.store, station_id, req.server.public_base, metadata, display_name=display_name)
     capture_cloud_response(req, "siriusxm", body.decode("utf-8", "replace"))
     req.send_bytes(body, content_type="application/json")
 
