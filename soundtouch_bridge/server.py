@@ -32,7 +32,6 @@ from .cloud import (
     siriusxm_station_display_experiment,
     siriusxm_station,
     siriusxm_token,
-    tunein_siriusxm_alias_station,
     sourceproviders_xml,
     sources_xml,
     tunein_station,
@@ -1311,16 +1310,7 @@ def handle_tunein_token(req: SoundTouchBridgeHandler) -> None:
 
 
 def handle_tunein_station(req: SoundTouchBridgeHandler, station_id: str) -> None:
-    target = resolve_station_alias_target(req.server.store, "TUNEIN", station_id)
-    if target["source"] == "SIRIUSXM":
-        body = tunein_siriusxm_alias_station(
-            req.server.store,
-            station_id,
-            target["station_id"],
-            req.server.public_base,
-        )
-    else:
-        body = tunein_station(req.server.store, station_id, req.server.public_base)
+    body = tunein_station(req.server.store, station_id, req.server.public_base)
     req.send_bytes(body, content_type="application/json")
 
 
@@ -1817,28 +1807,11 @@ def handle_scmudc(req: SoundTouchBridgeHandler, device_id: str) -> None:
     if summary:
         req.server.store.add_scmudc_event(device_id, summary, body)
         print(f"[scmudc] {device_id} {summary}")
-    maybe_override_siriusxm_preset_press(req.server.store, device_id, body)
     req.send_text("")
 
 
 def maybe_override_siriusxm_preset_press(store: Store, device_id: str, body: str) -> None:
-    slot = pressed_preset_slot(body)
-    if not slot:
-        return
-    speaker = store.get_speaker(device_id)
-    if not speaker:
-        return
-    preset = store.get_preset(device_id, slot)
-    if preset.get("source") != "SIRIUSXM" or not preset.get("raw_content_item"):
-        return
-    if is_siriusxm_display_experiment(preset):
-        return
-    thread = threading.Thread(
-        target=select_siriusxm_preset_content,
-        args=(str(speaker.get("ip", "")), str(preset["raw_content_item"]), device_id, slot),
-        daemon=True,
-    )
-    thread.start()
+    return
 
 
 def is_siriusxm_display_experiment(preset: Json) -> bool:

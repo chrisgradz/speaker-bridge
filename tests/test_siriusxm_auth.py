@@ -15,7 +15,6 @@ from soundtouch_bridge.cloud import (
     siriusxm_now_playing,
     siriusxm_station_display_experiment,
     siriusxm_station,
-    tunein_siriusxm_alias_station,
     tunein_station,
 )
 from soundtouch_bridge.siriusxm import (
@@ -39,6 +38,7 @@ from soundtouch_bridge.server import (
     build_siriusxm_content_item,
     rewrite_siriusxm_preset_content_item,
     handle_siriusxm_now_playing_debug,
+    handle_tunein_station,
     iheart_playlist_body,
     iheart_playlist_url,
     iheart_proxy_stream_url,
@@ -1457,30 +1457,52 @@ class SiriusXmAuthTests(unittest.TestCase):
 
         self.assertEqual(target, {"source": "TUNEIN", "station_id": "s17947"})
 
-    def test_tunein_siriusxm_alias_station_points_to_siriusxm_proxy(self) -> None:
+    def test_tunein_station_ignores_stale_cross_source_alias(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             store = Store(os.path.join(tmp, "state.sqlite3"))
             try:
-                store.upsert_siriusxm_channel("big80s", {"name": "80s on 8"})
-                body = tunein_siriusxm_alias_station(
-                    store,
-                    "s17947",
-                    "big80s",
-                    "http://ubuntu.example:8000",
-                )
+                store.upsert_station_alias("TUNEIN", "s17947", "big80s", "SIRIUSXM")
+                with patch(
+                    "soundtouch_bridge.cloud._resolve_tunein",
+                    return_value={"url": "https://stream.example.test/live.mp3", "media_type": "mp3"},
+                ):
+                    body = tunein_station(store, "s17947", "http://ubuntu.example:8000")
             finally:
                 store.conn.close()
 
         payload = json.loads(body)
-        self.assertNotIn("id", payload)
-        self.assertEqual(payload["name"], "80s on 8")
-        self.assertNotIn("url", payload)
-        self.assertEqual(payload["audio"]["streamUrl"], "http://ubuntu.example:8000/siriusxm/proxy/big80s/playlist.m3u8")
-        self.assertEqual(payload["_links"]["bmx_nowplaying"]["href"], "/v1/now-playing/station/big80s")
-        self.assertEqual(payload["nowPlaying"]["stationName"]["text"], "80s on 8")
-        self.assertEqual(payload["nowPlaying"]["track"]["text"], "80s on 8")
-        self.assertEqual(payload["_meta"]["targetSource"], "SIRIUSXM")
-        self.assertNotIn("s17947", json.dumps(payload))
+        self.assertEqual(payload["name"], "s17947")
+        self.assertEqual(payload["audio"]["streamUrl"], "https://stream.example.test/live.mp3")
+        self.assertNotIn("SIRIUSXM", json.dumps(payload))
+
+    def test_tunein_handler_ignores_stale_cross_source_alias(self) -> None:
+        class FakeRequest:
+            def __init__(self, store: Store) -> None:
+                self.server = SimpleNamespace(store=store, public_base="http://ubuntu.example:8000")
+                self.body = b""
+                self.content_type = ""
+
+            def send_bytes(self, body: bytes, content_type: str) -> None:
+                self.body = body
+                self.content_type = content_type
+
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Store(os.path.join(tmp, "state.sqlite3"))
+            try:
+                store.upsert_station_alias("TUNEIN", "s17947", "big80s", "SIRIUSXM")
+                req = FakeRequest(store)
+                with patch(
+                    "soundtouch_bridge.cloud._resolve_tunein",
+                    return_value={"url": "https://stream.example.test/live.mp3", "media_type": "mp3"},
+                ):
+                    handle_tunein_station(req, "s17947")
+            finally:
+                store.conn.close()
+
+        payload = json.loads(req.body)
+        self.assertEqual(req.content_type, "application/json")
+        self.assertEqual(payload["audio"]["streamUrl"], "https://stream.example.test/live.mp3")
+        self.assertNotIn("SIRIUSXM", json.dumps(payload))
 
     def test_pressed_preset_slot_reads_scmudc_preset_events(self) -> None:
         body = json.dumps(
@@ -1503,7 +1525,7 @@ class SiriusXmAuthTests(unittest.TestCase):
 
         self.assertEqual(pressed_preset_slot(body), 0)
 
-    def test_display_experiment_preset_press_does_not_send_select_override(self) -> None:
+    def test_preset_press_does_not_send_select_override(self) -> None:
         body = json.dumps(
             {
                 "payload": {
@@ -1539,10 +1561,7 @@ class SiriusXmAuthTests(unittest.TestCase):
                         "source": "SIRIUSXM",
                         "name": "80s on 8",
                         "station_id": "big80s?preset_play=True",
-                        "raw_content_item": build_siriusxm_display_experiment_content_item(
-                            "big80s?preset_play=True",
-                            "80s on 8",
-                        ),
+                        "raw_content_item": build_siriusxm_content_item("big80s", "80s on 8"),
                     },
                 )
 
