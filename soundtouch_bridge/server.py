@@ -535,8 +535,17 @@ def build_play_content_item(store: Store, device_id: str, base_url: str, body: J
             raise ValueError("stream_url is required for direct streams")
         if not (stream_url.startswith("http://") or stream_url.startswith("https://")):
             raise ValueError("stream_url must start with http:// or https://")
+        stream_url = rewrite_iheart_descriptor_stream_url(base_url, stream_url)
         return build_basic_content_item("LOCAL_INTERNET_RADIO", stream_url, name, image_url)
     raise ValueError(f"unsupported source: {source}")
+
+
+def rewrite_iheart_descriptor_stream_url(base_url: str, stream_url: str) -> str:
+    parsed = urllib.parse.urlparse(stream_url)
+    match = re.fullmatch(r"/iheart/stations/([^/]+)/station\.json", parsed.path)
+    if not match:
+        return stream_url
+    return iheart_proxy_stream_url(base_url, urllib.parse.unquote(match.group(1)))
 
 
 def build_basic_content_item(source: str, location: str, name: str, image_url: str = "") -> str:

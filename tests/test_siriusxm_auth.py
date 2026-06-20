@@ -1088,6 +1088,28 @@ class SiriusXmAuthTests(unittest.TestCase):
         self.assertNotIn("/iheart/stations/5305/station.json", raw)
         self.assertIn("<itemName>WGN AM 720</itemName>", raw)
 
+    def test_build_play_content_item_rewrites_iheart_descriptor_direct_stream(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Store(os.path.join(tmp, "state.sqlite3"))
+            try:
+                raw = build_play_content_item(
+                    store,
+                    "speaker-1",
+                    "http://ubuntu.example:8000",
+                    {
+                        "source": "LOCAL_INTERNET_RADIO",
+                        "name": "Rock 95.5",
+                        "image_url": "https://img.example/rock.png",
+                        "stream_url": "http://ubuntu.example:8000/iheart/stations/857/station.json?name=Rock+95.5",
+                    },
+                )
+            finally:
+                store.conn.close()
+
+        self.assertIn('location="http://ubuntu.example:8000/iheart/proxy/857/stream.aac"', raw)
+        self.assertNotIn("/iheart/stations/857/station.json", raw)
+        self.assertIn("<itemName>Rock 95.5</itemName>", raw)
+
     def test_build_play_content_item_renders_siriusxm_selection_as_native_provider_item(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             store = Store(os.path.join(tmp, "state.sqlite3"))
