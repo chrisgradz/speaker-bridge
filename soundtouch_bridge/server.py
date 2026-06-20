@@ -44,6 +44,7 @@ from .speaker import (
     import_presets,
     migrate_speaker,
     now_playing_xml,
+    press_speaker_key,
     probe_speaker,
     select_content_item,
     store_preset,
@@ -542,20 +543,38 @@ def push_station_to_speaker(speaker: Json, raw_content_item: str) -> Json:
     ip = str(speaker.get("ip", "")).strip()
     if not ip:
         return {"attempted": False, "ok": False, "message": "speaker IP is not known"}
+    before = speaker_now_playing_snapshot(ip)
+    woke_from_standby = str(before.get("source", "")).upper() == "STANDBY"
+    if woke_from_standby:
+        try:
+            press_speaker_key(ip, "POWER")
+            time.sleep(1.2)
+        except Exception as exc:
+            message = f"{type(exc).__name__}: {exc}"
+            print(f"[push-play] {speaker.get('device_id', '')} wake failed: {message}", flush=True)
+            return {"attempted": True, "ok": False, "message": message, "before": before}
     try:
         select_content_item(ip, raw_content_item)
     except Exception as exc:
         message = f"{type(exc).__name__}: {exc}"
         print(f"[push-play] {speaker.get('device_id', '')} failed: {message}", flush=True)
-        return {"attempted": True, "ok": False, "message": message}
-    snapshot = speaker_now_playing_snapshot(ip)
+        return {"attempted": True, "ok": False, "message": message, "before": before, "woke_from_standby": woke_from_standby}
+    snapshot = wait_for_selected_now_playing(ip)
     print(
         f"[push-play] {speaker.get('device_id', '')} sent /select"
+        f" woke={1 if woke_from_standby else 0}"
         f" source={snapshot.get('source', '')} location={snapshot.get('location', '')}"
         f" status={snapshot.get('play_status', '')}",
         flush=True,
     )
-    return {"attempted": True, "ok": True, "message": "sent to speaker", "now_playing": snapshot}
+    return {
+        "attempted": True,
+        "ok": True,
+        "message": "sent to speaker",
+        "before": before,
+        "woke_from_standby": woke_from_standby,
+        "now_playing": snapshot,
+    }
 
 
 def speaker_now_playing_snapshot(ip: str) -> Json:
@@ -572,6 +591,18 @@ def speaker_now_playing_snapshot(ip: str) -> Json:
         "play_status": xml_tag(xml, "playStatus"),
         "stream_type": xml_tag(xml, "streamType"),
     }
+
+
+def wait_for_selected_now_playing(ip: str, attempts: int = 5, delay_seconds: float = 0.5) -> Json:
+    snapshot: Json = {}
+    for attempt in range(attempts):
+        snapshot = speaker_now_playing_snapshot(ip)
+        source = str(snapshot.get("source", "")).upper()
+        if source and source != "STANDBY":
+            return snapshot
+        if attempt < attempts - 1:
+            time.sleep(delay_seconds)
+    return snapshot
 
 
 def rewrite_siriusxm_preset_content_item(preset: Json, experiment: bool) -> Json:

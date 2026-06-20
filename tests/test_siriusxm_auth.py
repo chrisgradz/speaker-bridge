@@ -57,6 +57,7 @@ from soundtouch_bridge.server import (
     sanitize_siriusxm_error,
     search_iheart_stations,
     search_tunein_stations,
+    speaker_now_playing_snapshot,
     siriusxm_metadata_proxy_debug_payload,
     tunein_icy_debug_payload,
     push_station_to_speaker,
@@ -1102,6 +1103,45 @@ class SiriusXmAuthTests(unittest.TestCase):
         self.assertEqual(result["now_playing"]["source"], "TUNEIN")
         self.assertEqual(result["now_playing"]["location"], "/v1/playback/station/s17947")
         self.assertEqual(result["now_playing"]["item_name"], "Station")
+
+    def test_push_station_to_speaker_wakes_standby_before_select(self) -> None:
+        speaker = {"device_id": "speaker-1", "ip": "192.168.1.50"}
+        raw = '<ContentItem source="SIRIUSXM_EVEREST" type="stationurl" location="/playback/station/big80s?preset_play=True"><itemName>80s on 8</itemName></ContentItem>'
+        responses = [
+            '<nowPlaying source="STANDBY"><playStatus></playStatus></nowPlaying>',
+            '<nowPlaying source="STANDBY"><playStatus></playStatus></nowPlaying>',
+            (
+                '<nowPlaying source="SIRIUSXM_EVEREST"><ContentItem source="SIRIUSXM_EVEREST" '
+                'location="/playback/station/big80s?preset_play=True"><itemName>80s on 8</itemName>'
+                "</ContentItem><playStatus>PLAY_STATE</playStatus>"
+                "<streamType>RADIO_STREAMING</streamType></nowPlaying>"
+            ),
+        ]
+
+        with patch("soundtouch_bridge.server.now_playing_xml", side_effect=responses), patch(
+            "soundtouch_bridge.server.press_speaker_key"
+        ) as press_key, patch("soundtouch_bridge.server.select_content_item") as select, patch(
+            "soundtouch_bridge.server.time.sleep"
+        ) as sleep:
+            result = push_station_to_speaker(speaker, raw)
+
+        press_key.assert_called_once_with("192.168.1.50", "POWER")
+        select.assert_called_once_with("192.168.1.50", raw)
+        self.assertEqual(sleep.call_args_list[0].args[0], 1.2)
+        self.assertEqual(sleep.call_args_list[1].args[0], 0.5)
+        self.assertEqual(result["woke_from_standby"], True)
+        self.assertEqual(result["now_playing"]["source"], "SIRIUSXM_EVEREST")
+        self.assertEqual(result["now_playing"]["location"], "/playback/station/big80s?preset_play=True")
+
+    def test_now_playing_snapshot_reads_root_source_when_content_item_is_empty(self) -> None:
+        with patch(
+            "soundtouch_bridge.server.now_playing_xml",
+            return_value='<nowPlaying source="STANDBY"><playStatus></playStatus></nowPlaying>',
+        ):
+            snapshot = speaker_now_playing_snapshot("192.168.1.50")
+
+        self.assertEqual(snapshot["source"], "STANDBY")
+        self.assertEqual(snapshot["location"], "")
 
     def test_tunein_station_returns_audio_stream_shape(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

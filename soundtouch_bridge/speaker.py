@@ -21,11 +21,11 @@ def _http_get(url: str, timeout: float = 5.0) -> bytes:
         return resp.read()
 
 
-def _http_post_xml(url: str, body: str, timeout: float = 5.0) -> bytes:
+def _http_post_xml(url: str, body: str, timeout: float = 5.0, content_type: str = "application/xml") -> bytes:
     req = urllib.request.Request(
         url,
         data=body.encode("utf-8"),
-        headers={"User-Agent": "soundtouch-bridge/0.1", "Content-Type": "application/xml"},
+        headers={"User-Agent": "soundtouch-bridge/0.1", "Content-Type": content_type},
         method="POST",
     )
     with urllib.request.urlopen(req, timeout=timeout) as resp:
@@ -97,6 +97,17 @@ def select_content_item(ip: str, raw_content_item: str) -> None:
 
 def now_playing_xml(ip: str) -> str:
     return _http_get(f"http://{ip}:{BOSE_BMX_PORT}/now_playing", timeout=4).decode("utf-8", "replace")
+
+
+def press_speaker_key(ip: str, key: str) -> None:
+    key = key.strip().upper()
+    if not re.fullmatch(r"[A-Z0-9_]+", key):
+        raise ValueError("invalid speaker key")
+    body = f'<key state="press" sender="Gabbo">{key}</key>'
+    _http_post_xml(f"http://{ip}:{BOSE_BMX_PORT}/key", body, timeout=4, content_type="text/xml")
+    time.sleep(0.15)
+    body = f'<key state="release" sender="Gabbo">{key}</key>'
+    _http_post_xml(f"http://{ip}:{BOSE_BMX_PORT}/key", body, timeout=4, content_type="text/xml")
 
 
 def _normalize_preset(
