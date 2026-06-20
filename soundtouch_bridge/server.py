@@ -2173,7 +2173,7 @@ PLAY_HTML = """<!doctype html>
     }
     .station-card {
       display: grid;
-      grid-template-rows: 136px auto auto;
+      grid-template-rows: 170px auto auto;
       gap: 10px;
       border: 1px solid var(--line);
       border-radius: 8px;
@@ -2183,17 +2183,17 @@ PLAY_HTML = """<!doctype html>
     }
     .station-art {
       width: 100%;
-      height: 136px;
+      height: 170px;
       display: grid;
       place-items: center;
       border-radius: 6px;
-      padding: 16px;
+      padding: 20px;
       background: #eef2f6;
       overflow: hidden;
     }
     .station-art img {
-      width: 100%;
-      height: 100%;
+      width: 82%;
+      height: 82%;
       object-fit: contain;
       display: block;
     }
