@@ -1038,7 +1038,7 @@ class SiriusXmAuthTests(unittest.TestCase):
         self.assertIn("name=WGN+AM+720", raw)
         self.assertIn("<itemName>WGN AM 720</itemName>", raw)
 
-    def test_build_play_content_item_renders_siriusxm_selection_as_local_descriptor(self) -> None:
+    def test_build_play_content_item_renders_siriusxm_selection_as_direct_local_playlist(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             store = Store(os.path.join(tmp, "state.sqlite3"))
             try:
@@ -1074,8 +1074,8 @@ class SiriusXmAuthTests(unittest.TestCase):
                 store.conn.close()
 
         self.assertIn('<ContentItem source="LOCAL_INTERNET_RADIO" type="stationurl"', raw)
-        self.assertIn("/siriusxm/stations/big80s/station.json", raw)
-        self.assertIn("name=80s+on+8", raw)
+        self.assertIn("http://ubuntu.example:8000/siriusxm/proxy/big80s/playlist.m3u8", raw)
+        self.assertNotIn("/siriusxm/stations/big80s/station.json", raw)
         self.assertEqual(channel["name"], "80s on 8")
         self.assertEqual(channel["entity_url"], "https://www.siriusxm.com/player/channel-linear/entity/example")
 

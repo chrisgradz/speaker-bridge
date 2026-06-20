@@ -501,7 +501,7 @@ def build_play_content_item(store: Store, device_id: str, base_url: str, body: J
         )
         return build_basic_content_item(
             "LOCAL_INTERNET_RADIO",
-            siriusxm_station_descriptor_url(base_url, station_id, name, image_url),
+            siriusxm_playlist_url(base_url, station_id),
             name,
             image_url,
         )
@@ -1121,6 +1121,10 @@ def siriusxm_station_descriptor_url(
     if query:
         url += "?" + urllib.parse.urlencode(query)
     return url
+
+
+def siriusxm_playlist_url(base_url: str, station_id: str) -> str:
+    return f"{base_url.strip().rstrip('/')}/siriusxm/proxy/{urllib.parse.quote(station_id.strip())}/playlist.m3u8"
 
 
 def iheart_station_descriptor(base_url: str, station_id: str, name: str, image_url: str = "") -> Json:
