@@ -921,6 +921,7 @@ def normalize_siriusxm_channel(body: Json) -> Json:
 
 
 def normalize_siriusxm_catalog_channel(channel: Json) -> Json:
+    name = str(channel.get("channelName") or channel.get("name") or "").strip()
     station_id = str(
         channel.get("urlKey")
         or channel.get("key")
@@ -930,6 +931,8 @@ def normalize_siriusxm_catalog_channel(channel: Json) -> Json:
         or channel.get("guid")
         or ""
     ).strip()
+    if station_id.isdigit():
+        station_id = siriusxm_display_slug(name) or station_id
     guid = str(
         channel.get("channelGuid")
         or channel.get("assetGUID")
@@ -937,7 +940,7 @@ def normalize_siriusxm_catalog_channel(channel: Json) -> Json:
         or channel.get("entityGuid")
         or ""
     ).strip()
-    name = str(channel.get("channelName") or channel.get("name") or station_id).strip()
+    name = name or station_id
     number = str(channel.get("channelNumberCanonical") or channel.get("channelNumber") or "").strip()
     image_url = first_siriusxm_image_url(channel)
     return {
@@ -947,6 +950,10 @@ def normalize_siriusxm_catalog_channel(channel: Json) -> Json:
         "entity_url": f"https://www.siriusxm.com/player/channel-linear/entity/{guid}" if guid else "",
         "image_url": image_url,
     }
+
+
+def siriusxm_display_slug(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "", value.lower())
 
 
 def handle_tunein_search(req: SoundTouchBridgeHandler) -> None:

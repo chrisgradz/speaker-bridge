@@ -838,6 +838,19 @@ class SiriusXmAuthTests(unittest.TestCase):
         self.assertEqual(normalized["name"], "PopRocks")
         self.assertEqual(normalized["number"], "6")
 
+    def test_normalize_siriusxm_catalog_channel_derives_slug_when_only_numeric_id_exists(self) -> None:
+        normalized = normalize_siriusxm_catalog_channel(
+            {
+                "channelId": "9450",
+                "channelName": "PopRocks",
+                "channelNumber": 6,
+            }
+        )
+
+        self.assertEqual(normalized["station_id"], "poprocks")
+        self.assertEqual(normalized["name"], "PopRocks")
+        self.assertEqual(normalized["number"], "6")
+
     def test_normalize_siriusxm_catalog_channel_uses_public_logo_urls(self) -> None:
         normalized = normalize_siriusxm_catalog_channel(
             {
