@@ -95,23 +95,6 @@ def select_content_item(ip: str, raw_content_item: str) -> None:
     _http_post_xml(f"http://{ip}:{BOSE_BMX_PORT}/select", raw_content_item, timeout=4)
 
 
-def play_preset_slot(ip: str, slot: int) -> None:
-    if slot < 1 or slot > 6:
-        raise ValueError("slot must be 1 through 6")
-    press_key(ip, f"PRESET_{slot}")
-
-
-def press_key(ip: str, key: str, hold_seconds: float = 0.15) -> None:
-    key = key.strip().upper()
-    if not re.fullmatch(r"[A-Z0-9_]+", key):
-        raise ValueError("invalid speaker key")
-    url = f"http://{ip}:{BOSE_BMX_PORT}/key"
-    sender = "SoundTouchBridge"
-    _http_post_xml(url, f'<key state="press" sender="{sender}">{key}</key>', timeout=4)
-    time.sleep(hold_seconds)
-    _http_post_xml(url, f'<key state="release" sender="{sender}">{key}</key>', timeout=4)
-
-
 def _normalize_preset(
     slot: str,
     source: str,
@@ -275,10 +258,11 @@ def preset_to_xml(preset: dict[str, Any]) -> str:
         source_name = "LOCAL_INTERNET_RADIO"
         provider = "11"
         source_id = "3"
+        content_item_type = "url"
         name = escape(preset.get("name", ""))
         image = escape(preset.get("image_url", ""))
         content_item = (
-            f'<ContentItem source="LOCAL_INTERNET_RADIO" type="stationurl" location="{location}" isPresetable="true">'
+            f'<ContentItem source="LOCAL_INTERNET_RADIO" type="{content_item_type}" location="{location}" isPresetable="true">'
             f"<itemName>{name}</itemName>"
             f"<containerArt>{image}</containerArt>"
             "</ContentItem>"
@@ -288,7 +272,7 @@ def preset_to_xml(preset: dict[str, Any]) -> str:
     return (
         f'<preset buttonNumber="{slot}">'
         f"<containerArt>{image}</containerArt>"
-        "<contentItemType>stationurl</contentItemType>"
+        f"<contentItemType>{'stationurl' if source == 'TUNEIN' else 'url'}</contentItemType>"
         f"<location>{location}</location><name>{name}</name>"
         f"{content_item}"
         f'<source id="{source_id}" type="Audio">'

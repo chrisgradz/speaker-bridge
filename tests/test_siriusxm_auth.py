@@ -35,7 +35,6 @@ from soundtouch_bridge.server import (
     PLAY_HTML,
     SoundTouchBridgeServer,
     build_play_content_item,
-    build_play_preset,
     build_siriusxm_display_experiment_content_item,
     build_siriusxm_content_item,
     rewrite_siriusxm_preset_content_item,
@@ -60,9 +59,9 @@ from soundtouch_bridge.server import (
     search_tunein_stations,
     siriusxm_metadata_proxy_debug_payload,
     tunein_icy_debug_payload,
-    play_station_via_preset_slot,
+    push_station_to_speaker,
 )
-from soundtouch_bridge.speaker import play_preset_slot, preset_to_xml, store_preset_xml
+from soundtouch_bridge.speaker import preset_to_xml, store_preset_xml
 
 
 class SiriusXmAuthTests(unittest.TestCase):
@@ -989,7 +988,7 @@ class SiriusXmAuthTests(unittest.TestCase):
 
         xml = preset_to_xml(preset)
 
-        self.assertIn('<ContentItem source="LOCAL_INTERNET_RADIO" type="stationurl"', xml)
+        self.assertIn('<ContentItem source="LOCAL_INTERNET_RADIO" type="url"', xml)
         self.assertIn('location="https://stream.revma.ihrhls.com/zc8731"', xml)
         self.assertIn("<itemName>Big 95.5</itemName>", xml)
 
@@ -1034,7 +1033,7 @@ class SiriusXmAuthTests(unittest.TestCase):
             finally:
                 store.conn.close()
 
-        self.assertIn('<ContentItem source="LOCAL_INTERNET_RADIO" type="stationurl"', raw)
+        self.assertIn('<ContentItem source="LOCAL_INTERNET_RADIO" type="url"', raw)
         self.assertIn("/iheart/stations/5305/station.json", raw)
         self.assertIn("name=WGN+AM+720", raw)
         self.assertIn("<itemName>WGN AM 720</itemName>", raw)
@@ -1074,97 +1073,21 @@ class SiriusXmAuthTests(unittest.TestCase):
             finally:
                 store.conn.close()
 
-        self.assertIn('<ContentItem source="LOCAL_INTERNET_RADIO" type="stationurl"', raw)
+        self.assertIn('<ContentItem source="LOCAL_INTERNET_RADIO" type="url"', raw)
         self.assertIn("http://ubuntu.example:8000/siriusxm/proxy/big80s/playlist.m3u8", raw)
         self.assertNotIn("/siriusxm/stations/big80s/station.json", raw)
         self.assertEqual(channel["name"], "80s on 8")
         self.assertEqual(channel["entity_url"], "https://www.siriusxm.com/player/channel-linear/entity/example")
 
-    def test_play_preset_slot_posts_key_press_and_release(self) -> None:
-        with patch("soundtouch_bridge.speaker._http_post_xml") as post_xml, patch(
-            "soundtouch_bridge.speaker.time.sleep"
-        ) as sleep:
-            play_preset_slot("192.168.1.50", 3)
-
-        self.assertEqual(post_xml.call_count, 2)
-        self.assertEqual(post_xml.call_args_list[0].args[0], "http://192.168.1.50:8090/key")
-        self.assertIn('state="press"', post_xml.call_args_list[0].args[1])
-        self.assertIn("PRESET_3", post_xml.call_args_list[0].args[1])
-        self.assertIn('state="release"', post_xml.call_args_list[1].args[1])
-        self.assertIn("PRESET_3", post_xml.call_args_list[1].args[1])
-        sleep.assert_called_once()
-
-    def test_build_play_preset_renders_siriusxm_as_stored_siriusxm_preset(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            store = Store(os.path.join(tmp, "state.sqlite3"))
-            try:
-                store.set_preset(
-                    "speaker-1",
-                    {
-                        "slot": 3,
-                        "source": "SIRIUSXM",
-                        "name": "1st Wave",
-                        "station_id": "firstwave",
-                        "raw_content_item": build_siriusxm_content_item(
-                            "firstwave",
-                            "1st Wave",
-                            "",
-                            "source-account-123",
-                        ),
-                    },
-                )
-                preset = build_play_preset(
-                    store,
-                    "speaker-1",
-                    "http://ubuntu.example:8000",
-                    {
-                        "slot": 2,
-                        "source": "SIRIUSXM",
-                        "station_id": "big80s",
-                        "name": "80s on 8",
-                        "entity_url": "https://www.siriusxm.com/player/channel-linear/entity/example",
-                        "image_url": "https://img.example/80s.png",
-                    },
-                )
-                channel = store.get_siriusxm_channel("big80s")
-            finally:
-                store.conn.close()
-
-        self.assertEqual(preset["slot"], 2)
-        self.assertEqual(preset["source"], "SIRIUSXM")
-        self.assertEqual(preset["station_id"], "big80s?preset_play=True")
-        self.assertIn('source="SIRIUSXM_EVEREST"', preset["raw_content_item"])
-        self.assertIn('/playback/station/big80s?preset_play=True', preset["raw_content_item"])
-        self.assertEqual(channel["name"], "80s on 8")
-        self.assertEqual(channel["entity_url"], "https://www.siriusxm.com/player/channel-linear/entity/example")
-
-    def test_play_station_via_preset_slot_stores_and_presses_slot(self) -> None:
+    def test_push_station_to_speaker_selects_content_item(self) -> None:
         speaker = {"device_id": "speaker-1", "ip": "192.168.1.50"}
-        preset = {
-            "device_id": "speaker-1",
-            "slot": 2,
-            "source": "TUNEIN",
-            "station_id": "s17947",
-            "name": "Station",
-            "image_url": "",
-        }
+        raw = '<ContentItem source="TUNEIN" type="stationurl" location="/v1/playback/station/s17947"><itemName>Station</itemName></ContentItem>'
 
-        with patch("soundtouch_bridge.server.store_preset") as store, patch(
-            "soundtouch_bridge.server.play_preset_slot"
-        ) as play_slot:
-            result = play_station_via_preset_slot(speaker, preset)
+        with patch("soundtouch_bridge.server.select_content_item") as select:
+            result = push_station_to_speaker(speaker, raw)
 
-        store.assert_called_once_with("192.168.1.50", preset)
-        play_slot.assert_called_once_with("192.168.1.50", 2)
-        self.assertEqual(
-            result,
-            {
-                "attempted": True,
-                "ok": True,
-                "slot": 2,
-                "message": "stored on speaker and pressed preset 2",
-            },
-        )
+        select.assert_called_once_with("192.168.1.50", raw)
+        self.assertEqual(result, {"attempted": True, "ok": True, "message": "sent to speaker"})
 
     def test_tunein_station_returns_audio_stream_shape(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1626,8 +1549,8 @@ class SiriusXmAuthTests(unittest.TestCase):
         self.assertIn("station-grid", PLAY_HTML)
         self.assertIn("data-source=\"SIRIUSXM\"", PLAY_HTML)
         self.assertIn("pushStation", PLAY_HTML)
-        self.assertIn("playSlot", PLAY_HTML)
-        self.assertIn("Store &amp; Play", PLAY_HTML)
+        self.assertNotIn("playSlot", PLAY_HTML)
+        self.assertIn(">Push</button>", PLAY_HTML)
 
     def test_tunein_search_route_is_registered(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
