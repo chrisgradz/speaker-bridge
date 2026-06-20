@@ -2330,7 +2330,6 @@ PLAY_HTML = """<!doctype html>
         <button data-source="SIRIUSXM" class="active">SiriusXM</button>
         <button data-source="TUNEIN" class="secondary">TuneIn</button>
         <button data-source="IHEART" class="secondary">iHeart</button>
-        <button data-source="LOCAL_INTERNET_RADIO" class="secondary">Stream</button>
       </div>
       <label id="searchLabel">Search
         <input id="stationSearch" placeholder="Search stations">
@@ -2388,12 +2387,10 @@ PLAY_HTML = """<!doctype html>
         button.className = active ? 'active' : 'secondary';
       });
       $('loadSirius').style.display = source === 'SIRIUSXM' ? 'inline-flex' : 'none';
-      $('searchStations').style.display = source === 'LOCAL_INTERNET_RADIO' ? 'none' : 'inline-flex';
-      $('searchLabel').style.display = source === 'LOCAL_INTERNET_RADIO' ? 'none' : 'grid';
       $('listTitle').textContent =
         source === 'SIRIUSXM' ? 'SiriusXM Channels' :
         source === 'TUNEIN' ? 'TuneIn Stations' :
-        source === 'IHEART' ? 'iHeart Stations' : 'Direct Stream';
+        'iHeart Stations';
       renderStations();
     }
 
@@ -2441,17 +2438,6 @@ PLAY_HTML = """<!doctype html>
 
     function renderStations() {
       const grid = $('stationGrid');
-      if (state.source === 'LOCAL_INTERNET_RADIO') {
-        grid.innerHTML = `
-          <div class="station-card">
-            <div class="station-art">URL</div>
-            <label>Name<input data-role="direct-name" placeholder="Station name"></label>
-            <label>Stream URL<input data-role="direct-url" placeholder="https://example.com/stream.mp3"></label>
-            <button data-action="push-direct">Try Select</button>
-          </div>`;
-        grid.querySelector('[data-action="push-direct"]').onclick = pushDirectStream;
-        return;
-      }
       const stations = visibleStations();
       if (!stations.length) {
         grid.innerHTML = '<div class="meta">No stations loaded.</div>';
@@ -2473,15 +2459,6 @@ PLAY_HTML = """<!doctype html>
       }).join('');
       grid.querySelectorAll('[data-action="push"]').forEach((button) => {
         button.onclick = () => pushStation(stations[Number(button.dataset.index)]);
-      });
-    }
-
-    async function pushDirectStream() {
-      const card = $('stationGrid').querySelector('.station-card');
-      await pushStation({
-        source: 'LOCAL_INTERNET_RADIO',
-        name: card.querySelector('[data-role="direct-name"]').value.trim(),
-        stream_url: card.querySelector('[data-role="direct-url"]').value.trim(),
       });
     }
 
