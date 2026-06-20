@@ -922,8 +922,10 @@ def normalize_siriusxm_channel(body: Json) -> Json:
 
 def normalize_siriusxm_catalog_channel(channel: Json) -> Json:
     station_id = str(
-        channel.get("channelId")
+        channel.get("urlKey")
+        or channel.get("key")
         or channel.get("stationId")
+        or channel.get("channelId")
         or channel.get("channelGuid")
         or channel.get("guid")
         or ""
