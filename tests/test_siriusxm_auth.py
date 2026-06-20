@@ -1038,7 +1038,7 @@ class SiriusXmAuthTests(unittest.TestCase):
         self.assertIn("name=WGN+AM+720", raw)
         self.assertIn("<itemName>WGN AM 720</itemName>", raw)
 
-    def test_build_play_content_item_renders_siriusxm_selection_and_saves_channel(self) -> None:
+    def test_build_play_content_item_renders_siriusxm_selection_as_local_descriptor(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             store = Store(os.path.join(tmp, "state.sqlite3"))
             try:
@@ -1073,9 +1073,9 @@ class SiriusXmAuthTests(unittest.TestCase):
             finally:
                 store.conn.close()
 
-        self.assertIn('source="SIRIUSXM_EVEREST"', raw)
-        self.assertIn('location="/playback/station/big80s?preset_play=True"', raw)
-        self.assertIn('sourceAccount="source-account-123"', raw)
+        self.assertIn('<ContentItem source="LOCAL_INTERNET_RADIO" type="stationurl"', raw)
+        self.assertIn("/siriusxm/stations/big80s/station.json", raw)
+        self.assertIn("name=80s+on+8", raw)
         self.assertEqual(channel["name"], "80s on 8")
         self.assertEqual(channel["entity_url"], "https://www.siriusxm.com/player/channel-linear/entity/example")
 
@@ -1617,6 +1617,19 @@ class SiriusXmAuthTests(unittest.TestCase):
                 store.conn.close()
 
         self.assertEqual(matched, {"/play": True, "/api/speakers/000C8A8DAF9E/play": True})
+
+    def test_siriusxm_descriptor_route_is_registered(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Store(os.path.join(tmp, "state.sqlite3"))
+            server = SoundTouchBridgeServer(("127.0.0.1", 0), store, "http://ubuntu.example:8000")
+            try:
+                path = "/siriusxm/stations/big80s/station.json"
+                matched = any(method == "GET" and pattern.fullmatch(path) for method, pattern, _handler in server.routes)
+            finally:
+                server.server_close()
+                store.conn.close()
+
+        self.assertTrue(matched)
 
     def test_admin_ui_persists_save_confirmation_after_reload(self) -> None:
         self.assertIn("cardNotices", ADMIN_HTML)

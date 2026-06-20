@@ -164,6 +164,7 @@ class SoundTouchBridgeServer(ThreadingHTTPServer):
         self.route("GET", r"/api/iheart/search", handle_iheart_search)
         self.route("GET", r"/api/iheart/stations/(?P<station_id>[^/]+)/stream", handle_iheart_station_stream)
         self.route("GET", r"/iheart/stations/(?P<station_id>[^/]+)/station\.json", handle_iheart_station_descriptor)
+        self.route("GET", r"/siriusxm/stations/(?P<station_id>[^/]+)/station\.json", handle_siriusxm_station_descriptor)
         self.route("GET", r"/iheart/proxy/(?P<station_id>[^/]+)/playlist\.m3u", handle_iheart_proxy_playlist)
         self.route("GET", r"/iheart/proxy/(?P<station_id>[^/]+)/stream\.aac", handle_iheart_proxy_stream)
         self.route("GET", r"/iheart/proxy/(?P<station_id>[^/]+)/stream", handle_iheart_proxy_stream)
@@ -498,11 +499,11 @@ def build_play_content_item(store: Store, device_id: str, base_url: str, body: J
                 "stream_url": existing_channel.get("stream_url", ""),
             },
         )
-        return build_siriusxm_content_item(
-            station_id,
+        return build_basic_content_item(
+            "LOCAL_INTERNET_RADIO",
+            siriusxm_station_descriptor_url(base_url, station_id, name, image_url),
             name,
             image_url,
-            first_siriusxm_source_account(store, device_id),
         )
     if source == "IHEART":
         if not station_id:
@@ -938,6 +939,27 @@ def handle_iheart_station_descriptor(req: SoundTouchBridgeHandler, station_id: s
     req.send_json(iheart_station_descriptor(req.server.public_base, station_id, name, image_url))
 
 
+def handle_siriusxm_station_descriptor(req: SoundTouchBridgeHandler, station_id: str) -> None:
+    query = parse_qs(urlparse(req.path).query)
+    name = (query.get("name") or [station_id])[0]
+    image_url = (query.get("image") or [""])[0]
+    channel = req.server.store.get_siriusxm_channel(station_id)
+    if name and not channel.get("name"):
+        req.server.store.upsert_siriusxm_channel(station_id, {"name": name})
+    metadata = {
+        "stationName": name,
+        "channelName": name,
+        "trackName": name,
+        "artistName": "SiriusXM",
+        "imageUrl": image_url,
+        "containerArt": image_url,
+    }
+    req.send_bytes(
+        siriusxm_station(req.server.store, station_id, req.server.public_base, metadata),
+        content_type="application/json",
+    )
+
+
 def handle_iheart_proxy_playlist(req: SoundTouchBridgeHandler, station_id: str) -> None:
     body = iheart_playlist_body(req.server.public_base, station_id)
     req.send_text(body, content_type="audio/x-mpegurl")
@@ -1074,6 +1096,23 @@ def iheart_station_descriptor_url(
     image_url: str = "",
 ) -> str:
     url = f"{base_url.strip().rstrip('/')}/iheart/stations/{urllib.parse.quote(station_id.strip())}/station.json"
+    query: dict[str, str] = {}
+    if name:
+        query["name"] = name
+    if image_url:
+        query["image"] = image_url
+    if query:
+        url += "?" + urllib.parse.urlencode(query)
+    return url
+
+
+def siriusxm_station_descriptor_url(
+    base_url: str,
+    station_id: str,
+    name: str = "",
+    image_url: str = "",
+) -> str:
+    url = f"{base_url.strip().rstrip('/')}/siriusxm/stations/{urllib.parse.quote(station_id.strip())}/station.json"
     query: dict[str, str] = {}
     if name:
         query["name"] = name
