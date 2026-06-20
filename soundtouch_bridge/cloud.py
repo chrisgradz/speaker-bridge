@@ -149,10 +149,10 @@ def tunein_token() -> bytes:
     return b'{"access_token":"soundtouch-bridge-local","token_type":"Bearer","expires_in":31536000}'
 
 
-def tunein_station(store: Store, station_id: str, base_url: str) -> bytes:
+def tunein_station(store: Store, station_id: str, base_url: str, display_name: str = "") -> bytes:
     resolved = _resolve_tunein(station_id)
     preset = store.find_preset_by_source_station("TUNEIN", station_id)
-    name = resolved.get("name") or (preset.get("name") if preset else "") or station_id
+    name = resolved.get("name") or (preset.get("name") if preset else "") or display_name or station_id
     image = resolved.get("image") or (preset.get("image_url") if preset else "") or ""
     stream_url = resolved.get("url") or f"{base_url}/silence.mp3"
     has_playlist = resolved.get("media_type", "").lower() in {"hls", "m3u", "m3u8"} or ".m3u8" in stream_url.lower()

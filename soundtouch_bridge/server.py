@@ -506,7 +506,9 @@ def build_play_content_item(store: Store, device_id: str, base_url: str, body: J
     if source == "TUNEIN":
         if not station_id:
             raise ValueError("station_id is required for TuneIn")
-        return build_basic_content_item("TUNEIN", f"/v1/playback/station/{station_id}", name, image_url)
+        query = urllib.parse.urlencode({"name": name}) if name else ""
+        suffix = f"?{query}" if query else ""
+        return build_basic_content_item("TUNEIN", f"/v1/playback/station/{station_id}{suffix}", name, image_url)
     if source == "SIRIUSXM":
         if not station_id:
             raise ValueError("station_id is required for SiriusXM")
@@ -1332,7 +1334,9 @@ def handle_tunein_token(req: SoundTouchBridgeHandler) -> None:
 
 
 def handle_tunein_station(req: SoundTouchBridgeHandler, station_id: str) -> None:
-    body = tunein_station(req.server.store, station_id, req.server.public_base)
+    query = parse_qs(urlparse(getattr(req, "path", "")).query)
+    display_name = query.get("name", [""])[0].strip()
+    body = tunein_station(req.server.store, station_id, req.server.public_base, display_name=display_name)
     req.send_bytes(body, content_type="application/json")
 
 

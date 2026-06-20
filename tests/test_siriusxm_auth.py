@@ -1039,9 +1039,30 @@ class SiriusXmAuthTests(unittest.TestCase):
                 store.conn.close()
 
         self.assertIn('<ContentItem source="TUNEIN" type="stationurl"', raw)
-        self.assertIn('location="/v1/playback/station/s17947"', raw)
+        self.assertIn('location="/v1/playback/station/s17947?name=The+Answer+Chicago"', raw)
         self.assertIn("<itemName>The Answer Chicago</itemName>", raw)
         self.assertIn("<containerArt>https://img.example/tunein.png</containerArt>", raw)
+
+    def test_tunein_station_uses_display_name_hint_when_no_preset_exists(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Store(os.path.join(tmp, "state.sqlite3"))
+            try:
+                with patch(
+                    "soundtouch_bridge.cloud._resolve_tunein",
+                    return_value={"url": "https://stream.example.test/live.mp3", "media_type": "mp3"},
+                ):
+                    body = tunein_station(
+                        store,
+                        "s17947",
+                        "http://ubuntu.example:8000",
+                        display_name="The Answer Chicago",
+                    )
+            finally:
+                store.conn.close()
+
+        payload = json.loads(body)
+        self.assertEqual(payload["name"], "The Answer Chicago")
+        self.assertEqual(payload["nowPlaying"]["stationName"]["text"], "The Answer Chicago")
 
     def test_build_play_content_item_renders_iheart_selection_as_local_stream(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
