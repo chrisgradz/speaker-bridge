@@ -455,6 +455,18 @@ def first_siriusxm_source_account(store: Store, device_id: str) -> str:
     return ""
 
 
+def first_source_account_for_source(store: Store, device_id: str, source: str) -> str:
+    source = source.strip().upper()
+    for preset in store.preset_slots_for_speaker(device_id):
+        raw = str(preset.get("raw_content_item", ""))
+        if xml_attr(raw, "source").strip().upper() != source:
+            continue
+        source_account = xml_attr(raw, "sourceAccount")
+        if source_account:
+            return source_account
+    return ""
+
+
 def build_siriusxm_content_item(
     station_id: str,
     name: str,
@@ -468,6 +480,26 @@ def build_siriusxm_content_item(
     location = f"/playback/station/{station_id}?{urllib.parse.urlencode(query)}"
     item = (
         f'<ContentItem source="SIRIUSXM_EVEREST" type="stationurl" location="{escape(location)}" '
+        f'sourceAccount="{escape(source_account)}" isPresetable="true">'
+        f"<itemName>{escape(name)}</itemName>"
+    )
+    if image_url:
+        item += f"<containerArt>{escape(image_url)}</containerArt>"
+    return item + "</ContentItem>"
+
+
+def build_iheart_content_item(
+    station_id: str,
+    name: str,
+    image_url: str = "",
+    source_account: str = "",
+) -> str:
+    location = (
+        f'<IHeartCILocation id="{escape(station_id)}" '
+        'locationType="LIVE_STATION" />'
+    )
+    item = (
+        f'<ContentItem source="IHEART" type="stationurl" location="{escape(location)}" '
         f'sourceAccount="{escape(source_account)}" isPresetable="true">'
         f"<itemName>{escape(name)}</itemName>"
     )
@@ -524,11 +556,11 @@ def build_play_content_item(store: Store, device_id: str, base_url: str, body: J
     if source == "IHEART":
         if not station_id:
             raise ValueError("station_id is required for iHeart")
-        return build_basic_content_item(
-            "LOCAL_INTERNET_RADIO",
-            iheart_proxy_stream_url(base_url, station_id),
+        return build_iheart_content_item(
+            station_id,
             name,
             image_url,
+            first_source_account_for_source(store, device_id, "IHEART"),
         )
     if source == "LOCAL_INTERNET_RADIO":
         if not stream_url:

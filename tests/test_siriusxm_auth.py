@@ -1069,6 +1069,23 @@ class SiriusXmAuthTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             store = Store(os.path.join(tmp, "state.sqlite3"))
             try:
+                store.set_preset(
+                    "speaker-1",
+                    {
+                        "slot": 5,
+                        "source": "OPAQUE",
+                        "name": "BIG 95.5 FM",
+                        "station_id": "",
+                        "stream_url": "",
+                        "image_url": "",
+                        "raw_content_item": (
+                            '<ContentItem source="IHEART" '
+                            'location="&lt;IHeartCILocation id=&quot;857&quot; locationType=&quot;LIVE_STATION&quot; /&gt;" '
+                            'sourceAccount="cgrzadziel@example.com" isPresetable="true">'
+                            "<itemName>BIG 95.5 FM</itemName></ContentItem>"
+                        ),
+                    },
+                )
                 raw = build_play_content_item(
                     store,
                     "speaker-1",
@@ -1083,9 +1100,10 @@ class SiriusXmAuthTests(unittest.TestCase):
             finally:
                 store.conn.close()
 
-        self.assertIn('<ContentItem source="LOCAL_INTERNET_RADIO" type="url"', raw)
-        self.assertIn('location="http://ubuntu.example:8000/iheart/proxy/5305/stream.aac"', raw)
-        self.assertNotIn("/iheart/stations/5305/station.json", raw)
+        self.assertIn('<ContentItem source="IHEART"', raw)
+        self.assertIn("IHeartCILocation", raw)
+        self.assertIn("id=&quot;5305&quot;", raw)
+        self.assertIn('sourceAccount="cgrzadziel@example.com"', raw)
         self.assertIn("<itemName>WGN AM 720</itemName>", raw)
 
     def test_build_play_content_item_rewrites_iheart_descriptor_direct_stream(self) -> None:
