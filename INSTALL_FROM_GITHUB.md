@@ -25,22 +25,13 @@ Give the Ubuntu server a stable LAN IP, preferably with a DHCP reservation in
 your router. This matters because the speaker stores the literal URL
 `http://YOUR_UBUNTU_IP:8000` after migration.
 
-## 2. Clone The Repository
+## 2. Clone Or Update The Repository
 
 If this is a fresh server:
 
 ```bash
 cd ~
 git clone git@github.com:chrisgradz/SoundTouch.git
-cd SoundTouch
-```
-
-If you prefer HTTPS and the repository is private, use a GitHub Personal Access
-Token as the password. GitHub account passwords are not accepted for Git.
-
-```bash
-cd ~
-git clone https://github.com/chrisgradz/SoundTouch.git
 cd SoundTouch
 ```
 
@@ -51,18 +42,18 @@ cd ~/SoundTouch
 git pull origin main
 ```
 
-The Python package is still in:
+The active Python package is:
 
 ```bash
-cd sixback_ubuntu
+soundtouch_bridge
 ```
 
 ## 3. Run The Server Manually
 
-Start the service from the `sixback_ubuntu` folder:
+Start the service from the repository root:
 
 ```bash
-python3 -m sixback_ubuntu \
+python3 -m soundtouch_bridge \
   --host 0.0.0.0 \
   --port 8000 \
   --public-base http://192.168.1.25:8000
@@ -119,19 +110,15 @@ the speaker's cloud URLs to `http://192.168.1.25:8000`, and reboots the speaker.
 
 Wait 1-2 minutes after migration before pressing preset buttons.
 
-## 7. Install As A Systemd Service
+## 7. SiriusXM Env File
 
-After manual testing works, install it permanently:
+The SiriusXM credentials file is:
 
-```bash
-sudo useradd --system --home /var/lib/soundtouch-bridge --create-home soundtouch 2>/dev/null || true
-sudo install -d -m 755 -o soundtouch -g soundtouch /opt/soundtouch-bridge
-sudo cp -a ~/SoundTouch/sixback_ubuntu/. /opt/soundtouch-bridge/
-sudo install -d -m 755 -o soundtouch -g soundtouch /var/lib/soundtouch-bridge
-sudo chown -R soundtouch:soundtouch /opt/soundtouch-bridge /var/lib/soundtouch-bridge
+```text
+/etc/soundtouch-bridge/siriusxm.env
 ```
 
-Optional but recommended for SiriusXM presets:
+Create it with:
 
 ```bash
 sudo install -d -m 750 -o root -g soundtouch /etc/soundtouch-bridge
@@ -152,6 +139,17 @@ sudo chown root:soundtouch /etc/soundtouch-bridge/siriusxm.env
 sudo chmod 640 /etc/soundtouch-bridge/siriusxm.env
 ```
 
+## 8. Install As A Systemd Service
+
+After manual testing works, install it permanently:
+
+```bash
+sudo useradd --system --home /var/lib/soundtouch-bridge --create-home soundtouch 2>/dev/null || true
+sudo install -d -m 755 -o soundtouch -g soundtouch /opt/soundtouch-bridge /var/lib/soundtouch-bridge
+sudo cp -a soundtouch_bridge tools LICENSE.md licenses /opt/soundtouch-bridge/
+sudo chown -R soundtouch:soundtouch /opt/soundtouch-bridge /var/lib/soundtouch-bridge
+```
+
 Create the service file:
 
 ```bash
@@ -169,7 +167,7 @@ Wants=network-online.target
 [Service]
 WorkingDirectory=/opt/soundtouch-bridge
 EnvironmentFile=-/etc/soundtouch-bridge/siriusxm.env
-ExecStart=/usr/bin/python3 -m sixback_ubuntu --host 0.0.0.0 --port 8000 --public-base http://192.168.1.25:8000 --db /var/lib/soundtouch-bridge/state.sqlite3
+ExecStart=/usr/bin/python3 -m soundtouch_bridge --host 0.0.0.0 --port 8000 --public-base http://192.168.1.25:8000 --db /var/lib/soundtouch-bridge/state.sqlite3
 Restart=on-failure
 User=soundtouch
 Group=soundtouch
@@ -192,7 +190,7 @@ Follow logs:
 journalctl -u soundtouch-bridge -f
 ```
 
-## 8. Updating Later
+## 9. Updating Later
 
 To pull future changes from GitHub:
 
@@ -200,42 +198,9 @@ To pull future changes from GitHub:
 cd ~/SoundTouch
 git pull origin main
 sudo systemctl stop soundtouch-bridge
-sudo cp -a sixback_ubuntu/. /opt/soundtouch-bridge/
+sudo cp -a soundtouch_bridge tools LICENSE.md licenses /opt/soundtouch-bridge/
 sudo chown -R soundtouch:soundtouch /opt/soundtouch-bridge
 sudo systemctl start soundtouch-bridge
-```
-
-## 9. Migrating From The Old Service Name
-
-If you already installed the earlier `sixback-ubuntu.service`, move the runtime
-paths once and keep the old service disabled:
-
-```bash
-cd ~/SoundTouch
-git pull origin main
-
-sudo systemctl stop sixback-ubuntu 2>/dev/null || true
-sudo systemctl disable sixback-ubuntu 2>/dev/null || true
-
-sudo useradd --system --home /var/lib/soundtouch-bridge --create-home soundtouch 2>/dev/null || true
-sudo install -d -m 755 -o soundtouch -g soundtouch /opt/soundtouch-bridge /var/lib/soundtouch-bridge
-sudo cp -a sixback_ubuntu/. /opt/soundtouch-bridge/
-sudo cp -n /var/lib/sixback-ubuntu/state.sqlite3 /var/lib/soundtouch-bridge/state.sqlite3 2>/dev/null || true
-sudo chown -R soundtouch:soundtouch /opt/soundtouch-bridge /var/lib/soundtouch-bridge
-
-sudo install -d -m 750 -o root -g soundtouch /etc/soundtouch-bridge
-sudo cp -n /etc/sixback-ubuntu/siriusxm.env /etc/soundtouch-bridge/siriusxm.env 2>/dev/null || true
-sudo chown root:soundtouch /etc/soundtouch-bridge/siriusxm.env 2>/dev/null || true
-sudo chmod 640 /etc/soundtouch-bridge/siriusxm.env 2>/dev/null || true
-```
-
-Then create `/etc/systemd/system/soundtouch-bridge.service` from section 7 and
-start it:
-
-```bash
-sudo systemctl daemon-reload
-sudo systemctl enable --now soundtouch-bridge
-journalctl -u soundtouch-bridge -f
 ```
 
 ## 10. Troubleshooting

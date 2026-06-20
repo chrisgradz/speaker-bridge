@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from sixback_ubuntu.sixback_ubuntu.server import (
+from soundtouch_bridge.server import (
     SIRIUSXM_HLS_AES_KEY,
     build_id3_text_tag,
     cached_fetch_siriusxm_url,
@@ -15,7 +15,7 @@ from sixback_ubuntu.sixback_ubuntu.server import (
     summarize_hls_playlist,
     trim_hls_playlist,
 )
-from sixback_ubuntu.sixback_ubuntu.icy import inspect_icy_stream, parse_icy_metadata_block
+from soundtouch_bridge.icy import inspect_icy_stream, parse_icy_metadata_block
 
 
 class FakeServer:
@@ -327,3 +327,4 @@ class HlsProxyTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+

@@ -10,15 +10,15 @@ from http.cookiejar import Cookie
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from sixback_ubuntu.sixback_ubuntu.db import Store
-from sixback_ubuntu.sixback_ubuntu.cloud import (
+from soundtouch_bridge.db import Store
+from soundtouch_bridge.cloud import (
     siriusxm_now_playing,
     siriusxm_station_display_experiment,
     siriusxm_station,
     tunein_siriusxm_alias_station,
     tunein_station,
 )
-from sixback_ubuntu.sixback_ubuntu.siriusxm import (
+from soundtouch_bridge.siriusxm import (
     DEFAULT_ENV_FILE,
     SiriusXmCredentials,
     SiriusXmSession,
@@ -30,9 +30,9 @@ from sixback_ubuntu.sixback_ubuntu.siriusxm import (
     redact_secret,
     should_refresh_stream,
 )
-from sixback_ubuntu.sixback_ubuntu.server import (
+from soundtouch_bridge.server import (
     ADMIN_HTML,
-    SixBackServer,
+    SoundTouchBridgeServer,
     build_siriusxm_display_experiment_content_item,
     build_siriusxm_content_item,
     rewrite_siriusxm_preset_content_item,
@@ -58,7 +58,7 @@ from sixback_ubuntu.sixback_ubuntu.server import (
     siriusxm_metadata_proxy_debug_payload,
     tunein_icy_debug_payload,
 )
-from sixback_ubuntu.sixback_ubuntu.speaker import preset_to_xml, store_preset_xml
+from soundtouch_bridge.speaker import preset_to_xml, store_preset_xml
 
 
 class SiriusXmAuthTests(unittest.TestCase):
@@ -1005,7 +1005,7 @@ class SiriusXmAuthTests(unittest.TestCase):
                     },
                 )
                 with patch(
-                    "sixback_ubuntu.sixback_ubuntu.cloud._resolve_tunein",
+                    "soundtouch_bridge.cloud._resolve_tunein",
                     return_value={"url": "https://stream.example.test/live.mp3", "media_type": "mp3"},
                 ):
                     body = tunein_station(store, "s17947", "http://ubuntu.example:8000")
@@ -1033,7 +1033,7 @@ class SiriusXmAuthTests(unittest.TestCase):
                     },
                 )
                 with patch(
-                    "sixback_ubuntu.sixback_ubuntu.cloud._resolve_tunein",
+                    "soundtouch_bridge.cloud._resolve_tunein",
                     return_value={"url": "https://stream.example.test/live.mp3", "media_type": "mp3"},
                 ):
                     payload = tunein_icy_debug_payload(
@@ -1089,7 +1089,7 @@ class SiriusXmAuthTests(unittest.TestCase):
             ]
         }
 
-        with patch("sixback_ubuntu.sixback_ubuntu.server.urllib.request.urlopen") as urlopen:
+        with patch("soundtouch_bridge.server.urllib.request.urlopen") as urlopen:
             urlopen.return_value.__enter__.return_value.read.return_value = json.dumps(response).encode("utf-8")
 
             stations = search_tunein_stations("answer chicago")
@@ -1133,7 +1133,7 @@ class SiriusXmAuthTests(unittest.TestCase):
             ]
         }
 
-        with patch("sixback_ubuntu.sixback_ubuntu.server.urllib.request.urlopen") as urlopen:
+        with patch("soundtouch_bridge.server.urllib.request.urlopen") as urlopen:
             urlopen.return_value.__enter__.return_value.read.return_value = json.dumps(response).encode("utf-8")
 
             stations = search_iheart_stations("big 95.5")
@@ -1156,7 +1156,7 @@ class SiriusXmAuthTests(unittest.TestCase):
             ]
         }
 
-        with patch("sixback_ubuntu.sixback_ubuntu.server.urllib.request.urlopen") as urlopen:
+        with patch("soundtouch_bridge.server.urllib.request.urlopen") as urlopen:
             urlopen.return_value.__enter__.return_value.read.return_value = json.dumps(response).encode("utf-8")
 
             stream_url = resolve_iheart_stream_url("8731")
@@ -1392,7 +1392,7 @@ class SiriusXmAuthTests(unittest.TestCase):
                     },
                 )
 
-                with patch("sixback_ubuntu.sixback_ubuntu.server.threading.Thread") as thread:
+                with patch("soundtouch_bridge.server.threading.Thread") as thread:
                     maybe_override_siriusxm_preset_press(store, "speaker-1", body)
             finally:
                 store.conn.close()
@@ -1401,9 +1401,7 @@ class SiriusXmAuthTests(unittest.TestCase):
 
     def test_admin_ui_exposes_siriusxm_channel_picker(self) -> None:
         self.assertIn("SoundTouch Bridge", ADMIN_HTML)
-        self.assertNotIn("<h1>SixBack Ubuntu</h1>", ADMIN_HTML)
         self.assertIn("Missing /etc/soundtouch-bridge/siriusxm.env", ADMIN_HTML)
-        self.assertNotIn("Missing /etc/sixback-ubuntu/siriusxm.env", ADMIN_HTML)
         self.assertIn("siriusChannelSearch", ADMIN_HTML)
         self.assertIn("loadSiriusCatalog", ADMIN_HTML)
         self.assertIn("data-action=\"pick-sirius\"", ADMIN_HTML)
@@ -1419,38 +1417,14 @@ class SiriusXmAuthTests(unittest.TestCase):
             with open(env_path, "w", encoding="utf-8") as handle:
                 handle.write("SIRIUSXM_USERNAME='new@example.com'\nSIRIUSXM_PASSWORD='new-pass'\n")
 
-            old_env_path = os.path.join(tmp, "old.env")
-            with open(old_env_path, "w", encoding="utf-8") as handle:
-                handle.write("SIRIUSXM_USERNAME='old@example.com'\nSIRIUSXM_PASSWORD='old-pass'\n")
-
             with patch.dict(
                 os.environ,
-                {
-                    "SOUNDTOUCH_BRIDGE_SIRIUSXM_ENV_FILE": env_path,
-                    "SIXBACK_SIRIUSXM_ENV_FILE": old_env_path,
-                },
+                {"SOUNDTOUCH_BRIDGE_SIRIUSXM_ENV_FILE": env_path},
             ):
-                server = SixBackServer(("127.0.0.1", 0), store, "http://ubuntu.example:8000")
+                server = SoundTouchBridgeServer(("127.0.0.1", 0), store, "http://ubuntu.example:8000")
             try:
                 self.assertEqual(server.siriusxm.credentials.username, "new@example.com")
                 self.assertEqual(server.siriusxm.credentials.password, "new-pass")
-            finally:
-                server.server_close()
-                store.conn.close()
-
-    def test_server_keeps_legacy_siriusxm_env_file_override(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            store = Store(os.path.join(tmp, "state.sqlite3"))
-            env_path = os.path.join(tmp, "legacy.env")
-            with open(env_path, "w", encoding="utf-8") as handle:
-                handle.write("SIRIUSXM_USERNAME='legacy@example.com'\nSIRIUSXM_PASSWORD='legacy-pass'\n")
-
-            with patch.dict(os.environ, {"SIXBACK_SIRIUSXM_ENV_FILE": env_path}, clear=False):
-                with patch.dict(os.environ, {"SOUNDTOUCH_BRIDGE_SIRIUSXM_ENV_FILE": ""}, clear=False):
-                    server = SixBackServer(("127.0.0.1", 0), store, "http://ubuntu.example:8000")
-            try:
-                self.assertEqual(server.siriusxm.credentials.username, "legacy@example.com")
-                self.assertEqual(server.siriusxm.credentials.password, "legacy-pass")
             finally:
                 server.server_close()
                 store.conn.close()
@@ -1471,7 +1445,7 @@ class SiriusXmAuthTests(unittest.TestCase):
     def test_tunein_search_route_is_registered(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             store = Store(os.path.join(tmp, "state.sqlite3"))
-            server = SixBackServer(("127.0.0.1", 0), store, "http://ubuntu.example:8000")
+            server = SoundTouchBridgeServer(("127.0.0.1", 0), store, "http://ubuntu.example:8000")
             try:
                 matched = any(
                     method == "GET" and pattern.fullmatch("/api/tunein/search")
@@ -1486,7 +1460,7 @@ class SiriusXmAuthTests(unittest.TestCase):
     def test_iheart_routes_are_registered(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             store = Store(os.path.join(tmp, "state.sqlite3"))
-            server = SixBackServer(("127.0.0.1", 0), store, "http://ubuntu.example:8000")
+            server = SoundTouchBridgeServer(("127.0.0.1", 0), store, "http://ubuntu.example:8000")
             try:
                 paths = [
                     "/api/iheart/search",
@@ -1604,7 +1578,7 @@ class SiriusXmAuthTests(unittest.TestCase):
     def test_siriusxm_display_experiment_route_accepts_adapter_relative_path(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             store = Store(os.path.join(tmp, "state.sqlite3"))
-            server = SixBackServer(("127.0.0.1", 0), store, "http://ubuntu.example:8000")
+            server = SoundTouchBridgeServer(("127.0.0.1", 0), store, "http://ubuntu.example:8000")
             try:
                 path = "/core02/svc-bmx-adapter-siriusxm-everest-eco1/prod/live-adapter/experiments/siriusxm/display/playback/station/big80s"
                 matched = any(method == "GET" and pattern.fullmatch(path) for method, pattern, _handler in server.routes)
@@ -1703,3 +1677,5 @@ def make_cookie(name: str, value: str) -> Cookie:
 
 if __name__ == "__main__":
     unittest.main()
+
+

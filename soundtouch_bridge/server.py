@@ -55,8 +55,8 @@ Json = dict[str, Any]
 SIRIUSXM_HLS_AES_KEY = base64.b64decode("0Nsco7MAgxowGvkUT8aYag==")
 
 
-class SixBackHandler(BaseHTTPRequestHandler):
-    server: "SixBackServer"
+class SoundTouchBridgeHandler(BaseHTTPRequestHandler):
+    server: "SoundTouchBridgeServer"
 
     def do_GET(self) -> None:
         self._dispatch("GET")
@@ -108,19 +108,15 @@ class SixBackHandler(BaseHTTPRequestHandler):
         self.send_bytes(json.dumps(body, indent=2).encode("utf-8"), status, "application/json")
 
 
-RouteHandler = Callable[[SixBackHandler], None]
+RouteHandler = Callable[[SoundTouchBridgeHandler], None]
 
 
-class SixBackServer(ThreadingHTTPServer):
+class SoundTouchBridgeServer(ThreadingHTTPServer):
     def __init__(self, addr: tuple[str, int], store: Store, public_base: str):
-        super().__init__(addr, SixBackHandler)
+        super().__init__(addr, SoundTouchBridgeHandler)
         self.store = store
         self.public_base = public_base.rstrip("/")
-        siriusxm_env_file = (
-            os.environ.get("SOUNDTOUCH_BRIDGE_SIRIUSXM_ENV_FILE")
-            or os.environ.get("SIXBACK_SIRIUSXM_ENV_FILE")
-            or DEFAULT_ENV_FILE
-        )
+        siriusxm_env_file = os.environ.get("SOUNDTOUCH_BRIDGE_SIRIUSXM_ENV_FILE") or DEFAULT_ENV_FILE
         self.siriusxm = SiriusXmSession.from_env(siriusxm_env_file)
         self.siriusxm_proxy_urls: dict[str, str] = {}
         self.siriusxm_fetch_cache: dict[str, tuple[float, bytes]] = {}
@@ -210,7 +206,7 @@ class SixBackServer(ThreadingHTTPServer):
         self.route("GET", r"/updates/soundtouch", handle_updates)
 
 
-def handle_root(req: SixBackHandler) -> None:
+def handle_root(req: SoundTouchBridgeHandler) -> None:
     req.send_text(
         '<!doctype html><html><head><meta charset="utf-8"><title>SoundTouch Bridge</title></head>'
         '<body><h1>SoundTouch Bridge</h1><p>Admin UI: <a href="/admin">/admin</a></p></body></html>',
@@ -218,19 +214,19 @@ def handle_root(req: SixBackHandler) -> None:
     )
 
 
-def handle_admin(req: SixBackHandler) -> None:
+def handle_admin(req: SoundTouchBridgeHandler) -> None:
     req.send_bytes(ADMIN_HTML.encode("utf-8"), content_type="text/html; charset=utf-8")
 
 
-def handle_healthz(req: SixBackHandler) -> None:
+def handle_healthz(req: SoundTouchBridgeHandler) -> None:
     req.send_json({"ok": True})
 
 
-def handle_list_speakers(req: SixBackHandler) -> None:
+def handle_list_speakers(req: SoundTouchBridgeHandler) -> None:
     req.send_json({"speakers": req.server.store.list_speakers()})
 
 
-def handle_add_speaker(req: SixBackHandler) -> None:
+def handle_add_speaker(req: SoundTouchBridgeHandler) -> None:
     body = req.read_json()
     ip = str(body.get("ip", "")).strip()
     if not ip:
@@ -241,7 +237,7 @@ def handle_add_speaker(req: SixBackHandler) -> None:
     req.send_json({"speaker": speaker}, HTTPStatus.CREATED)
 
 
-def handle_import_presets(req: SixBackHandler, device_id: str) -> None:
+def handle_import_presets(req: SoundTouchBridgeHandler, device_id: str) -> None:
     speaker = req.server.store.get_speaker(device_id)
     if not speaker:
         req.send_json({"error": "unknown speaker"}, 404)
@@ -251,7 +247,7 @@ def handle_import_presets(req: SixBackHandler, device_id: str) -> None:
     req.send_json({"device_id": device_id, "imported": len(presets), "presets": presets})
 
 
-def handle_speaker_events(req: SixBackHandler, device_id: str) -> None:
+def handle_speaker_events(req: SoundTouchBridgeHandler, device_id: str) -> None:
     speaker = req.server.store.get_speaker(device_id)
     if not speaker:
         req.send_json({"error": "unknown speaker"}, 404)
@@ -259,7 +255,7 @@ def handle_speaker_events(req: SixBackHandler, device_id: str) -> None:
     req.send_json({"device_id": device_id, "events": req.server.store.recent_scmudc_events(device_id)})
 
 
-def handle_cloud_responses(req: SixBackHandler, account_id: str) -> None:
+def handle_cloud_responses(req: SoundTouchBridgeHandler, account_id: str) -> None:
     query = urlparse(req.path).query
     raw = "raw=1" in query or "raw=true" in query.lower()
     responses = req.server.store.recent_cloud_responses(account_id)
@@ -274,7 +270,7 @@ def handle_cloud_responses(req: SixBackHandler, account_id: str) -> None:
     req.send_json({"account_id": account_id, "redacted": not raw, "responses": responses})
 
 
-def handle_get_presets(req: SixBackHandler, device_id: str) -> None:
+def handle_get_presets(req: SoundTouchBridgeHandler, device_id: str) -> None:
     speaker = req.server.store.get_speaker(device_id)
     if not speaker:
         req.send_json({"error": "unknown speaker"}, 404)
@@ -282,7 +278,7 @@ def handle_get_presets(req: SixBackHandler, device_id: str) -> None:
     req.send_json({"device_id": device_id, "presets": req.server.store.preset_slots_for_speaker(device_id)})
 
 
-def handle_put_preset(req: SixBackHandler, device_id: str, slot: str) -> None:
+def handle_put_preset(req: SoundTouchBridgeHandler, device_id: str, slot: str) -> None:
     speaker = req.server.store.get_speaker(device_id)
     if not speaker:
         req.send_json({"error": "unknown speaker"}, 404)
@@ -300,7 +296,7 @@ def handle_put_preset(req: SixBackHandler, device_id: str, slot: str) -> None:
     req.send_json({"device_id": device_id, "preset": saved, "speaker_store": speaker_store})
 
 
-def handle_copy_preset(req: SixBackHandler, device_id: str, slot: str) -> None:
+def handle_copy_preset(req: SoundTouchBridgeHandler, device_id: str, slot: str) -> None:
     speaker = req.server.store.get_speaker(device_id)
     if not speaker:
         req.send_json({"error": "unknown speaker"}, 404)
@@ -318,7 +314,7 @@ def handle_copy_preset(req: SixBackHandler, device_id: str, slot: str) -> None:
     req.send_json({"device_id": device_id, "source_slot": source_slot, "preset": saved})
 
 
-def handle_siriusxm_display_experiment_preset(req: SixBackHandler, device_id: str, slot: str) -> None:
+def handle_siriusxm_display_experiment_preset(req: SoundTouchBridgeHandler, device_id: str, slot: str) -> None:
     speaker = req.server.store.get_speaker(device_id)
     if not speaker:
         req.send_json({"error": "unknown speaker"}, 404)
@@ -338,7 +334,7 @@ def handle_siriusxm_display_experiment_preset(req: SixBackHandler, device_id: st
     req.send_json({"device_id": device_id, "preset": saved, "speaker_store": speaker_store})
 
 
-def handle_delete_preset(req: SixBackHandler, device_id: str, slot: str) -> None:
+def handle_delete_preset(req: SoundTouchBridgeHandler, device_id: str, slot: str) -> None:
     speaker = req.server.store.get_speaker(device_id)
     if not speaker:
         req.send_json({"error": "unknown speaker"}, 404)
@@ -552,7 +548,7 @@ def resolve_station_alias_target(store: Store, source: str, station_id: str) -> 
     return store.resolve_station_alias_target(source, station_id.split("?", 1)[0])
 
 
-def handle_migrate(req: SixBackHandler, device_id: str) -> None:
+def handle_migrate(req: SoundTouchBridgeHandler, device_id: str) -> None:
     speaker = req.server.store.get_speaker(device_id)
     if not speaker:
         req.send_json({"error": "unknown speaker"}, 404)
@@ -564,11 +560,11 @@ def handle_migrate(req: SixBackHandler, device_id: str) -> None:
     req.send_json({"device_id": device_id, "base_url": base_url, "transcript": transcript})
 
 
-def handle_siriusxm_channels_list(req: SixBackHandler) -> None:
+def handle_siriusxm_channels_list(req: SoundTouchBridgeHandler) -> None:
     req.send_json({"channels": req.server.store.list_siriusxm_channels()})
 
 
-def handle_siriusxm_catalog(req: SixBackHandler) -> None:
+def handle_siriusxm_catalog(req: SoundTouchBridgeHandler) -> None:
     try:
         channels = [normalize_siriusxm_catalog_channel(channel) for channel in req.server.siriusxm.get_channels()]
     except Exception as exc:
@@ -579,11 +575,11 @@ def handle_siriusxm_catalog(req: SixBackHandler) -> None:
     req.send_json({"channels": channels, "session": req.server.siriusxm.status()})
 
 
-def handle_siriusxm_session(req: SixBackHandler) -> None:
+def handle_siriusxm_session(req: SoundTouchBridgeHandler) -> None:
     req.send_json({"session": req.server.siriusxm.status()})
 
 
-def handle_siriusxm_session_login(req: SixBackHandler) -> None:
+def handle_siriusxm_session_login(req: SoundTouchBridgeHandler) -> None:
     try:
         req.server.siriusxm.login()
     except Exception as exc:
@@ -593,11 +589,11 @@ def handle_siriusxm_session_login(req: SixBackHandler) -> None:
     req.send_json({"session": req.server.siriusxm.status()})
 
 
-def handle_siriusxm_channel_get(req: SixBackHandler, station_id: str) -> None:
+def handle_siriusxm_channel_get(req: SoundTouchBridgeHandler, station_id: str) -> None:
     req.send_json({"channel": req.server.store.get_siriusxm_channel(station_id)})
 
 
-def handle_siriusxm_channel_put(req: SixBackHandler, station_id: str) -> None:
+def handle_siriusxm_channel_put(req: SoundTouchBridgeHandler, station_id: str) -> None:
     body = req.read_json()
     try:
         channel = normalize_siriusxm_channel(body)
@@ -608,7 +604,7 @@ def handle_siriusxm_channel_put(req: SixBackHandler, station_id: str) -> None:
     req.send_json({"channel": saved})
 
 
-def handle_siriusxm_channel_refresh(req: SixBackHandler, station_id: str) -> None:
+def handle_siriusxm_channel_refresh(req: SoundTouchBridgeHandler, station_id: str) -> None:
     try:
         stream_url = resolve_siriusxm_stream_url(req.server.store, req.server.siriusxm, station_id, force=True)
     except Exception as exc:
@@ -625,7 +621,7 @@ def handle_siriusxm_channel_refresh(req: SixBackHandler, station_id: str) -> Non
     )
 
 
-def handle_siriusxm_now_playing_debug(req: SixBackHandler, station_id: str) -> None:
+def handle_siriusxm_now_playing_debug(req: SoundTouchBridgeHandler, station_id: str) -> None:
     channel = req.server.store.get_siriusxm_channel(station_id)
     visible_channel = {
         "station_id": channel.get("station_id") or station_id,
@@ -668,7 +664,7 @@ def handle_siriusxm_now_playing_debug(req: SixBackHandler, station_id: str) -> N
     )
 
 
-def handle_tunein_icy_debug(req: SixBackHandler, station_id: str) -> None:
+def handle_tunein_icy_debug(req: SoundTouchBridgeHandler, station_id: str) -> None:
     try:
         payload = tunein_icy_debug_payload(req.server.store, station_id, req.server.public_base)
     except Exception as exc:
@@ -677,7 +673,7 @@ def handle_tunein_icy_debug(req: SixBackHandler, station_id: str) -> None:
     req.send_json(payload)
 
 
-def handle_siriusxm_metadata_proxy_debug(req: SixBackHandler, station_id: str) -> None:
+def handle_siriusxm_metadata_proxy_debug(req: SoundTouchBridgeHandler, station_id: str) -> None:
     station_id = resolve_siriusxm_station_alias(req.server.store, station_id)
     channel = req.server.store.get_siriusxm_channel(station_id)
     metadata: Json = {}
@@ -788,7 +784,7 @@ def normalize_siriusxm_catalog_channel(channel: Json) -> Json:
     }
 
 
-def handle_tunein_search(req: SixBackHandler) -> None:
+def handle_tunein_search(req: SoundTouchBridgeHandler) -> None:
     query = parse_qs(urlparse(req.path).query).get("q", [""])[0].strip()
     if not query:
         req.send_json({"stations": []})
@@ -801,7 +797,7 @@ def handle_tunein_search(req: SixBackHandler) -> None:
     req.send_json({"stations": stations})
 
 
-def handle_iheart_search(req: SixBackHandler) -> None:
+def handle_iheart_search(req: SoundTouchBridgeHandler) -> None:
     query = parse_qs(urlparse(req.path).query).get("q", [""])[0].strip()
     if not query:
         req.send_json({"stations": []})
@@ -814,7 +810,7 @@ def handle_iheart_search(req: SixBackHandler) -> None:
     req.send_json({"stations": stations})
 
 
-def handle_iheart_station_stream(req: SixBackHandler, station_id: str) -> None:
+def handle_iheart_station_stream(req: SoundTouchBridgeHandler, station_id: str) -> None:
     query = parse_qs(urlparse(req.path).query)
     name = (query.get("name") or [""])[0]
     image_url = (query.get("image") or [""])[0]
@@ -834,19 +830,19 @@ def handle_iheart_station_stream(req: SixBackHandler, station_id: str) -> None:
     )
 
 
-def handle_iheart_station_descriptor(req: SixBackHandler, station_id: str) -> None:
+def handle_iheart_station_descriptor(req: SoundTouchBridgeHandler, station_id: str) -> None:
     query = parse_qs(urlparse(req.path).query)
     name = (query.get("name") or [station_id])[0]
     image_url = (query.get("image") or [""])[0]
     req.send_json(iheart_station_descriptor(req.server.public_base, station_id, name, image_url))
 
 
-def handle_iheart_proxy_playlist(req: SixBackHandler, station_id: str) -> None:
+def handle_iheart_proxy_playlist(req: SoundTouchBridgeHandler, station_id: str) -> None:
     body = iheart_playlist_body(req.server.public_base, station_id)
     req.send_text(body, content_type="audio/x-mpegurl")
 
 
-def handle_iheart_proxy_stream(req: SixBackHandler, station_id: str) -> None:
+def handle_iheart_proxy_stream(req: SoundTouchBridgeHandler, station_id: str) -> None:
     try:
         upstream_stream_url = resolve_iheart_stream_url(station_id)
         with urllib.request.urlopen(upstream_stream_url, timeout=10) as resp:
@@ -1090,23 +1086,23 @@ def sanitize_siriusxm_error(message: str, credentials: SiriusXmCredentials) -> s
     return sanitized[:500]
 
 
-def handle_bmx_services(req: SixBackHandler) -> None:
+def handle_bmx_services(req: SoundTouchBridgeHandler) -> None:
     req.send_bytes(bmx_services(req.server.public_base), content_type="application/json")
 
 
-def handle_bmx_services_availability(req: SixBackHandler) -> None:
+def handle_bmx_services_availability(req: SoundTouchBridgeHandler) -> None:
     req.send_bytes(bmx_services_availability(), content_type="application/json")
 
 
-def handle_sourceproviders(req: SixBackHandler) -> None:
+def handle_sourceproviders(req: SoundTouchBridgeHandler) -> None:
     req.send_bytes(sourceproviders_xml(), content_type="application/vnd.bose.streaming-v1.2+xml")
 
 
-def handle_tunein_token(req: SixBackHandler) -> None:
+def handle_tunein_token(req: SoundTouchBridgeHandler) -> None:
     req.send_bytes(tunein_token(), content_type="application/json")
 
 
-def handle_tunein_station(req: SixBackHandler, station_id: str) -> None:
+def handle_tunein_station(req: SoundTouchBridgeHandler, station_id: str) -> None:
     target = resolve_station_alias_target(req.server.store, "TUNEIN", station_id)
     if target["source"] == "SIRIUSXM":
         body = tunein_siriusxm_alias_station(
@@ -1120,7 +1116,7 @@ def handle_tunein_station(req: SixBackHandler, station_id: str) -> None:
     req.send_bytes(body, content_type="application/json")
 
 
-def handle_siriusxm_token(req: SixBackHandler) -> None:
+def handle_siriusxm_token(req: SoundTouchBridgeHandler) -> None:
     length = int(req.headers.get("Content-Length", "0") or "0")
     if length:
         req.rfile.read(length)
@@ -1129,13 +1125,13 @@ def handle_siriusxm_token(req: SixBackHandler) -> None:
     req.send_bytes(body, content_type="application/json")
 
 
-def handle_siriusxm_availability(req: SixBackHandler) -> None:
+def handle_siriusxm_availability(req: SoundTouchBridgeHandler) -> None:
     body = siriusxm_availability()
     capture_cloud_response(req, "siriusxm", body.decode("utf-8", "replace"))
     req.send_bytes(body, content_type="application/json")
 
 
-def handle_siriusxm_station(req: SixBackHandler, station_id: str) -> None:
+def handle_siriusxm_station(req: SoundTouchBridgeHandler, station_id: str) -> None:
     requested_station_id = station_id
     station_id = resolve_siriusxm_station_alias(req.server.store, station_id)
     metadata = {}
@@ -1151,7 +1147,7 @@ def handle_siriusxm_station(req: SixBackHandler, station_id: str) -> None:
     req.send_bytes(body, content_type="application/json")
 
 
-def handle_siriusxm_display_experiment(req: SixBackHandler, station_id: str) -> None:
+def handle_siriusxm_display_experiment(req: SoundTouchBridgeHandler, station_id: str) -> None:
     requested_station_id = station_id
     station_id = resolve_siriusxm_station_alias(req.server.store, station_id)
     metadata = {}
@@ -1167,7 +1163,7 @@ def handle_siriusxm_display_experiment(req: SixBackHandler, station_id: str) -> 
     req.send_bytes(body, content_type="application/json")
 
 
-def handle_siriusxm_now_playing(req: SixBackHandler, station_id: str) -> None:
+def handle_siriusxm_now_playing(req: SoundTouchBridgeHandler, station_id: str) -> None:
     requested_station_id = station_id
     station_id = resolve_siriusxm_station_alias(req.server.store, station_id)
     metadata = {}
@@ -1183,15 +1179,15 @@ def handle_siriusxm_now_playing(req: SixBackHandler, station_id: str) -> None:
     req.send_bytes(body, content_type="application/json")
 
 
-def handle_siriusxm_proxy_playlist(req: SixBackHandler, station_id: str) -> None:
+def handle_siriusxm_proxy_playlist(req: SoundTouchBridgeHandler, station_id: str) -> None:
     handle_siriusxm_proxy_playlist_impl(req, station_id, inject_metadata=False)
 
 
-def handle_siriusxm_metadata_proxy_playlist(req: SixBackHandler, station_id: str) -> None:
+def handle_siriusxm_metadata_proxy_playlist(req: SoundTouchBridgeHandler, station_id: str) -> None:
     handle_siriusxm_proxy_playlist_impl(req, station_id, inject_metadata=True)
 
 
-def handle_siriusxm_proxy_playlist_impl(req: SixBackHandler, station_id: str, inject_metadata: bool = False) -> None:
+def handle_siriusxm_proxy_playlist_impl(req: SoundTouchBridgeHandler, station_id: str, inject_metadata: bool = False) -> None:
     station_id = resolve_siriusxm_station_alias(req.server.store, station_id)
     try:
         stream_url = resolve_siriusxm_stream_url(req.server.store, req.server.siriusxm, station_id)
@@ -1261,7 +1257,7 @@ def handle_siriusxm_proxy_playlist_impl(req: SixBackHandler, station_id: str, in
     req.send_bytes(rewritten.encode("utf-8"), content_type="application/x-mpegURL")
 
 
-def handle_siriusxm_proxy_fetch(req: SixBackHandler, token: str = "") -> None:
+def handle_siriusxm_proxy_fetch(req: SoundTouchBridgeHandler, token: str = "") -> None:
     query = parse_qs(urlparse(req.path).query)
     target = req.server.siriusxm_proxy_urls.get(token, "") if token else (query.get("url") or [""])[0]
     if not target.startswith("https://"):
@@ -1293,7 +1289,7 @@ def handle_siriusxm_proxy_fetch(req: SixBackHandler, token: str = "") -> None:
     req.send_bytes(body, content_type=content_type)
 
 
-def handle_siriusxm_metadata_proxy_fetch(req: SixBackHandler, station_id: str, token: str) -> None:
+def handle_siriusxm_metadata_proxy_fetch(req: SoundTouchBridgeHandler, station_id: str, token: str) -> None:
     station_id = resolve_siriusxm_station_alias(req.server.store, station_id)
     target = req.server.siriusxm_proxy_urls.get(token, "")
     if not target.startswith("https://"):
@@ -1375,7 +1371,7 @@ def should_capture_siriusxm_playlist_success() -> bool:
     return False
 
 
-def maybe_capture_siriusxm_fetch_success(req: SixBackHandler, target: str, body: str) -> None:
+def maybe_capture_siriusxm_fetch_success(req: SoundTouchBridgeHandler, target: str, body: str) -> None:
     if should_capture_siriusxm_fetch_success(target):
         capture_cloud_response(req, "siriusxm", body)
 
@@ -1383,7 +1379,7 @@ def maybe_capture_siriusxm_fetch_success(req: SixBackHandler, target: str, body:
 def rewrite_hls_playlist(
     body: str,
     playlist_url: str,
-    server: SixBackServer,
+    server: SoundTouchBridgeServer,
     station_id: str = "",
     inject_metadata: bool = False,
     metadata: Json | None = None,
@@ -1504,7 +1500,7 @@ def is_hls_segment_tag(line: str) -> bool:
     )
 
 
-def rewrite_hls_key_line(line: str, playlist_url: str, server: SixBackServer) -> str:
+def rewrite_hls_key_line(line: str, playlist_url: str, server: SoundTouchBridgeServer) -> str:
     def repl(match: re.Match[str]) -> str:
         return f'URI="{proxy_url(urljoin(playlist_url, match.group(1)), server, absolute=False)}"'
 
@@ -1513,7 +1509,7 @@ def rewrite_hls_key_line(line: str, playlist_url: str, server: SixBackServer) ->
 
 def proxy_url(
     target: str,
-    server: SixBackServer,
+    server: SoundTouchBridgeServer,
     absolute: bool = True,
     station_id: str = "",
     inject_metadata: bool = False,
@@ -1595,7 +1591,7 @@ def describe_siriusxm_fetch_error(target: str, exc: Exception) -> str:
     return f"proxied fetch error host_path={location} error={type(exc).__name__}: {exc}"
 
 
-def handle_siriusxm_needs_auth(req: SixBackHandler, station_id: str) -> None:
+def handle_siriusxm_needs_auth(req: SoundTouchBridgeHandler, station_id: str) -> None:
     req.send_json(
         {
             "error": "siriusxm_stream_auth_required",
@@ -1606,7 +1602,7 @@ def handle_siriusxm_needs_auth(req: SixBackHandler, station_id: str) -> None:
     )
 
 
-def handle_scmudc(req: SixBackHandler, device_id: str) -> None:
+def handle_scmudc(req: SoundTouchBridgeHandler, device_id: str) -> None:
     length = int(req.headers.get("Content-Length", "0") or "0")
     body = req.rfile.read(length).decode("utf-8", "replace") if length else ""
     summary = summarize_scmudc(body)
@@ -1732,19 +1728,19 @@ def textish(value: Any) -> str:
     return str(value or "")
 
 
-def handle_account_full(req: SixBackHandler, account_id: str) -> None:
+def handle_account_full(req: SoundTouchBridgeHandler, account_id: str) -> None:
     body = account_full(req.server.store, account_id)
     capture_cloud_response(req, account_id, body.decode("utf-8", "replace"))
     req.send_bytes(body, content_type="application/xml")
 
 
-def handle_sources(req: SixBackHandler, account_id: str) -> None:
+def handle_sources(req: SoundTouchBridgeHandler, account_id: str) -> None:
     body = f'<?xml version="1.0" standalone="yes"?>{sources_xml(req.server.store, account_id)}'
     capture_cloud_response(req, account_id, body)
     req.send_text(body, content_type="application/xml")
 
 
-def capture_cloud_response(req: SixBackHandler, account_id: str, body: str) -> None:
+def capture_cloud_response(req: SoundTouchBridgeHandler, account_id: str, body: str) -> None:
     path = urlparse(req.path).path
     req.server.store.add_cloud_response(account_id, path, req.client_address[0], body)
     print(f"[cloud-response] account={account_id} path={path} client={req.client_address[0]} bytes={len(body)}")
@@ -1757,7 +1753,7 @@ def redact_cloud_response(body: str) -> str:
     return body
 
 
-def handle_account_presets(req: SixBackHandler, account_id: str) -> None:
+def handle_account_presets(req: SoundTouchBridgeHandler, account_id: str) -> None:
     body = account_presets(req.server.store, account_id)
     if not body:
         req.send_text("", 404)
@@ -1765,7 +1761,7 @@ def handle_account_presets(req: SixBackHandler, account_id: str) -> None:
     req.send_bytes(body, content_type="application/xml")
 
 
-def handle_device_presets(req: SixBackHandler, account_id: str, device_id: str) -> None:
+def handle_device_presets(req: SoundTouchBridgeHandler, account_id: str, device_id: str) -> None:
     body = device_presets(req.server.store, device_id)
     if not body:
         req.send_text("", 404)
@@ -1773,7 +1769,7 @@ def handle_device_presets(req: SixBackHandler, account_id: str, device_id: str) 
     req.send_bytes(body, content_type="application/xml")
 
 
-def handle_device_add(req: SixBackHandler, account_id: str) -> None:
+def handle_device_add(req: SoundTouchBridgeHandler, account_id: str) -> None:
     length = int(req.headers.get("Content-Length", "0") or "0")
     body = req.rfile.read(length).decode("utf-8", "replace") if length else ""
     match = re.search(r'deviceid="([^"]+)"', body)
@@ -1798,7 +1794,7 @@ def handle_device_add(req: SixBackHandler, account_id: str) -> None:
     req.wfile.write(response)
 
 
-def handle_source_add(req: SixBackHandler, account_id: str) -> None:
+def handle_source_add(req: SoundTouchBridgeHandler, account_id: str) -> None:
     length = int(req.headers.get("Content-Length", "0") or "0")
     body = req.rfile.read(length).decode("utf-8", "replace") if length else ""
     username = _tag(body, "username")
@@ -1831,7 +1827,7 @@ def _tag(xml: str, name: str) -> str:
     return match.group(1).strip() if match else ""
 
 
-def handle_updates(req: SixBackHandler) -> None:
+def handle_updates(req: SoundTouchBridgeHandler) -> None:
     req.send_text('<?xml version="1.0" encoding="UTF-8"?><updates/>', content_type="application/xml")
 
 
@@ -1839,14 +1835,14 @@ def report_response() -> Json:
     return {"nextReportIn": 1800}
 
 
-def handle_report(req: SixBackHandler, **_: str) -> None:
+def handle_report(req: SoundTouchBridgeHandler, **_: str) -> None:
     length = int(req.headers.get("Content-Length", "0") or "0")
     if length:
         req.rfile.read(length)
     req.send_json(report_response())
 
 
-def handle_empty(req: SixBackHandler, **_: str) -> None:
+def handle_empty(req: SoundTouchBridgeHandler, **_: str) -> None:
     length = int(req.headers.get("Content-Length", "0") or "0")
     if length:
         req.rfile.read(length)
@@ -2726,7 +2722,7 @@ def main(argv: list[str] | None = None) -> None:
 
     public_base = args.public_base or f"http://{guess_lan_ip()}:{args.port}"
     store = Store(args.db)
-    server = SixBackServer((args.host, args.port), store, public_base)
+    server = SoundTouchBridgeServer((args.host, args.port), store, public_base)
     print(f"soundtouch-bridge listening on {args.host}:{args.port}")
     print(f"speaker cloud base: {public_base}")
     print(f"sqlite state: {args.db}")
@@ -2735,4 +2731,5 @@ def main(argv: list[str] | None = None) -> None:
 
 if __name__ == "__main__":
     main()
+
 

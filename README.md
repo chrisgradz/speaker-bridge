@@ -1,40 +1,33 @@
 # SoundTouch Bridge
 
-This repository contains a small Ubuntu-targeted service for keeping Bose
-SoundTouch speakers usable after the original cloud service retirement.
+SoundTouch Bridge is an Ubuntu-targeted local cloud replacement for Bose
+SoundTouch speakers.
 
-The implementation currently lives in [`sixback_ubuntu`](sixback_ubuntu/).
-That package name is retained for compatibility with the working prototype, but
-the service, documentation, and admin UI are now named SoundTouch Bridge.
+It supports:
 
-- register a SoundTouch speaker by IP,
-- import its existing six presets from `:8090/presets`,
-- edit TuneIn and direct-stream preset slots from a browser,
-- search and assign TuneIn, SiriusXM, and iHeart stations from the admin UI,
-- refresh SiriusXM playback with a local login/session manager,
-- migrate the speaker over the Bose diagnostic telnet port `17000`,
-- serve the local Bose cloud replacement on port `8000`,
-- persist speaker and preset state in SQLite.
+- registering SoundTouch speakers by IP,
+- importing existing presets from `:8090/presets`,
+- editing TuneIn, SiriusXM, iHeart, and direct-stream preset slots from a browser,
+- refreshing SiriusXM playback with a local login/session manager,
+- migrating the speaker over the Bose diagnostic telnet port `17000`,
+- serving the local Bose cloud replacement on port `8000`,
+- persisting speaker and preset state in SQLite.
 
-This is not full cloud feature parity. Spotify, DLNA browsing, SSDP
-auto-discovery, OTA flows, and group orchestration are outside the current
-scope.
-
-## Quick Start
+The active Python package is [`soundtouch_bridge`](soundtouch_bridge/), so the
+manual run command is:
 
 ```bash
-cd sixback_ubuntu
-python3 -m sixback_ubuntu \
+python3 -m soundtouch_bridge \
   --host 0.0.0.0 \
   --port 8000 \
   --public-base http://YOUR_UBUNTU_IP:8000 \
   --db /var/lib/soundtouch-bridge/state.sqlite3
 ```
 
-Then check:
+The SiriusXM env file is located at:
 
-```bash
-curl http://YOUR_UBUNTU_IP:8000/healthz
+```text
+/etc/soundtouch-bridge/siriusxm.env
 ```
 
 Open the admin UI:
@@ -45,9 +38,8 @@ http://YOUR_UBUNTU_IP:8000/admin
 
 ## Documentation
 
-- [SoundTouch Bridge README](sixback_ubuntu/README.md)
-- [Deployment guide](sixback_ubuntu/DEPLOYMENT.md)
 - [Install from GitHub](INSTALL_FROM_GITHUB.md)
+- [Deployment guide](DEPLOYMENT.md)
 
 ## Important Network Note
 
@@ -65,5 +57,5 @@ with its new IP updates the stored device entry.
 SoundTouch Bridge includes original Ubuntu service work and portions derived
 from or informed by public SixBack protocol work. See [`LICENSE.md`](LICENSE.md)
 for this repository's license language and
-[`sixback_ubuntu/SIXBACK_LICENSE`](sixback_ubuntu/SIXBACK_LICENSE) for the
-SixBack license terms that continue to apply to SixBack-derived parts.
+[`licenses/SIXBACK_LICENSE`](licenses/SIXBACK_LICENSE) for the SixBack license
+terms that continue to apply to SixBack-derived parts.

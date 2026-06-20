@@ -10,15 +10,15 @@ from urllib.parse import urlparse
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from sixback_ubuntu.db import Store  # noqa: E402
+from soundtouch_bridge.db import Store  # noqa: E402
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Import a SiriusXM web-player HAR capture into sixback_ubuntu SQLite."
+        description="Import a SiriusXM web-player HAR capture into SoundTouch Bridge SQLite."
     )
     parser.add_argument("har", help="Path to the .har file captured from the SiriusXM player")
-    parser.add_argument("--db", required=True, help="Path to sixback_ubuntu state.sqlite3")
+    parser.add_argument("--db", required=True, help="Path to SoundTouch Bridge state.sqlite3")
     parser.add_argument(
         "--station-id",
         default="",
@@ -128,3 +128,4 @@ def response_header(response: dict, name: str) -> str:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+

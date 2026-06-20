@@ -11,7 +11,7 @@ from .db import Store
 from .speaker import preset_to_xml
 
 
-DATA_DIR = Path(__file__).resolve().parents[1] / "data"
+DATA_DIR = Path(__file__).resolve().parent / "data"
 BOSE_TS = "2012-09-19T12:43:00.000+00:00"
 
 

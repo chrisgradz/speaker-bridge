@@ -25,7 +25,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 This repository includes portions derived from or informed by the public SixBack
 project and includes SixBack protocol/data material. Those portions remain
 subject to the SixBack license terms in
-[`sixback_ubuntu/SIXBACK_LICENSE`](sixback_ubuntu/SIXBACK_LICENSE).
+[`licenses/SIXBACK_LICENSE`](licenses/SIXBACK_LICENSE).
 
 The license grant above applies only to original SoundTouch Bridge additions
 where they are not covered by the SixBack license or another third-party
