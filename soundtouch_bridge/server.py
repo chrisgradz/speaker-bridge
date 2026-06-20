@@ -143,7 +143,11 @@ class SoundTouchBridgeServer(ThreadingHTTPServer):
         self.route("POST", r"/api/speakers/(?P<device_id>[^/]+)/import-presets", handle_import_presets)
         self.route("POST", r"/api/speakers/(?P<device_id>[^/]+)/migrate", handle_migrate)
         self.route("GET", r"/api/speakers/(?P<device_id>[^/]+)/events", handle_speaker_events)
-        self.route("POST", r"/api/speakers/(?P<device_id>[^/]+)/play", handle_play_station)
+        self.route(
+            "POST",
+            r"/api/experiments/play/speakers/(?P<device_id>[^/]+)/select",
+            handle_play_station,
+        )
         self.route("GET", r"/api/accounts/(?P<account_id>[^/]+)/cloud-responses", handle_cloud_responses)
         self.route("GET", r"/api/speakers/(?P<device_id>[^/]+)/presets", handle_get_presets)
         self.route("PUT", r"/api/speakers/(?P<device_id>[^/]+)/presets/(?P<slot>[1-6])", handle_put_preset)
@@ -275,13 +279,14 @@ def handle_play_station(req: SoundTouchBridgeHandler, device_id: str) -> None:
         req.send_json({"error": "unknown speaker"}, 404)
         return
     try:
+        body = req.read_json()
         raw_content_item = build_play_content_item(
             req.server.store,
             device_id,
             req.server.public_base,
-            req.read_json(),
+            body,
         )
-        result = push_station_to_speaker(speaker, raw_content_item)
+        result = push_station_to_speaker(speaker, raw_content_item, wake=bool(body.get("wake", False)))
     except Exception as exc:
         req.send_json({"error": type(exc).__name__, "message": str(exc)}, 400)
         return
@@ -497,15 +502,6 @@ def build_play_content_item(store: Store, device_id: str, base_url: str, body: J
         if not station_id:
             raise ValueError("station_id is required for SiriusXM")
         station_id = station_id.rstrip("/").split("/")[-1].split("?", 1)[0]
-        existing_channel = store.get_siriusxm_channel(station_id)
-        store.upsert_siriusxm_channel(
-            station_id,
-            {
-                "name": name,
-                "entity_url": str(body.get("entity_url", "")).strip() or existing_channel.get("entity_url", ""),
-                "stream_url": existing_channel.get("stream_url", ""),
-            },
-        )
         source_account = first_siriusxm_source_account(store, device_id)
         return build_siriusxm_content_item(station_id, name, image_url, source_account)
     if source == "IHEART":
@@ -538,16 +534,18 @@ def build_basic_content_item(source: str, location: str, name: str, image_url: s
     return item + "</ContentItem>"
 
 
-def push_station_to_speaker(speaker: Json, raw_content_item: str) -> Json:
+def push_station_to_speaker(speaker: Json, raw_content_item: str, wake: bool = False) -> Json:
     ip = str(speaker.get("ip", "")).strip()
     if not ip:
         return {"attempted": False, "ok": False, "message": "speaker IP is not known"}
     before = speaker_now_playing_snapshot(ip)
-    woke_from_standby = str(before.get("source", "")).upper() == "STANDBY"
-    if woke_from_standby:
+    is_standby = str(before.get("source", "")).upper() == "STANDBY"
+    woke_from_standby = False
+    if is_standby and wake:
         try:
             press_speaker_key(ip, "POWER")
             time.sleep(1.2)
+            woke_from_standby = True
         except Exception as exc:
             message = f"{type(exc).__name__}: {exc}"
             print(f"[push-play] {speaker.get('device_id', '')} wake failed: {message}", flush=True)
@@ -2035,7 +2033,7 @@ PLAY_HTML = """<!doctype html>
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>SoundTouch Bridge Play</title>
+  <title>SoundTouch Bridge Experimental Play Lab</title>
   <style>
     :root {
       color-scheme: light;
@@ -2111,6 +2109,25 @@ PLAY_HTML = """<!doctype html>
       background: #fff;
       color: var(--action);
     }
+    .experiment-note {
+      margin: 0 0 12px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+    .check-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin: 12px 0;
+      color: var(--muted);
+      font-size: 13px;
+      font-weight: 650;
+      text-transform: none;
+    }
+    .check-row input {
+      width: auto;
+      min-height: 0;
+    }
     .toolbar {
       display: flex;
       flex-wrap: wrap;
@@ -2174,9 +2191,14 @@ PLAY_HTML = """<!doctype html>
   </header>
   <main>
     <section>
-      <h2>Push To Speaker</h2>
+      <h2>Experimental Play Lab</h2>
+      <p class="experiment-note">Does not write presets or aliases. Use only for testing direct speaker select behavior.</p>
       <label>Speaker
         <select id="speakerSelect"></select>
+      </label>
+      <label class="check-row">
+        <input type="checkbox" id="wakeSpeaker">
+        Wake speaker if it is in standby
       </label>
       <div class="toolbar source-tabs" id="sourceTabs">
         <button data-source="SIRIUSXM" class="active">SiriusXM</button>
@@ -2299,7 +2321,7 @@ PLAY_HTML = """<!doctype html>
             <div class="station-art">URL</div>
             <label>Name<input data-role="direct-name" placeholder="Station name"></label>
             <label>Stream URL<input data-role="direct-url" placeholder="https://example.com/stream.mp3"></label>
-            <button data-action="push-direct">Push</button>
+            <button data-action="push-direct">Try Select</button>
           </div>`;
         grid.querySelector('[data-action="push-direct"]').onclick = pushDirectStream;
         return;
@@ -2320,7 +2342,7 @@ PLAY_HTML = """<!doctype html>
               <div class="station-title">${escapeHtml(station.name || station.station_id)}</div>
               <div class="meta">${escapeHtml(station.description || station.station_id || '')}</div>
             </div>
-            <button data-action="push" data-index="${index}">Push</button>
+            <button data-action="push" data-index="${index}">Try Select</button>
           </article>`;
       }).join('');
       grid.querySelectorAll('[data-action="push"]').forEach((button) => {
@@ -2350,12 +2372,13 @@ PLAY_HTML = """<!doctype html>
         image_url: station.image_url || '',
         entity_url: station.entity_url || '',
         stream_url: station.stream_url || '',
+        wake: $('wakeSpeaker').checked,
       };
-      const data = await api(`/api/speakers/${encodeURIComponent(deviceId)}/play`, {
+      const data = await api(`/api/experiments/play/speakers/${encodeURIComponent(deviceId)}/select`, {
         method: 'POST',
         body: JSON.stringify(payload),
       });
-      setStatus(data.play && data.play.ok ? `Pushed ${payload.name} to speaker` : data.play.message, data.play && data.play.ok ? 'ok' : 'error');
+      setStatus(data.play && data.play.ok ? `Tried ${payload.name} on speaker` : data.play.message, data.play && data.play.ok ? 'ok' : 'error');
     }
 
     function escapeHtml(value) {

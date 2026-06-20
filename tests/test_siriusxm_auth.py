@@ -1070,7 +1070,7 @@ class SiriusXmAuthTests(unittest.TestCase):
                         "image_url": "https://img.example/80s.png",
                     },
                 )
-                channel = store.get_siriusxm_channel("big80s")
+                channels = store.list_siriusxm_channels()
             finally:
                 store.conn.close()
 
@@ -1078,8 +1078,7 @@ class SiriusXmAuthTests(unittest.TestCase):
         self.assertIn('location="/playback/station/big80s?preset_play=True"', raw)
         self.assertIn('sourceAccount="source-account-123"', raw)
         self.assertNotIn("siriusxm/proxy/big80s/playlist.m3u8", raw)
-        self.assertEqual(channel["name"], "80s on 8")
-        self.assertEqual(channel["entity_url"], "https://www.siriusxm.com/player/channel-linear/entity/example")
+        self.assertEqual(channels, [])
 
     def test_push_station_to_speaker_selects_content_item(self) -> None:
         speaker = {"device_id": "speaker-1", "ip": "192.168.1.50"}
@@ -1104,7 +1103,24 @@ class SiriusXmAuthTests(unittest.TestCase):
         self.assertEqual(result["now_playing"]["location"], "/v1/playback/station/s17947")
         self.assertEqual(result["now_playing"]["item_name"], "Station")
 
-    def test_push_station_to_speaker_wakes_standby_before_select(self) -> None:
+    def test_push_station_to_speaker_does_not_wake_standby_by_default(self) -> None:
+        speaker = {"device_id": "speaker-1", "ip": "192.168.1.50"}
+        raw = '<ContentItem source="SIRIUSXM_EVEREST" type="stationurl" location="/playback/station/big80s?preset_play=True"><itemName>80s on 8</itemName></ContentItem>'
+
+        with patch(
+            "soundtouch_bridge.server.now_playing_xml",
+            return_value='<nowPlaying source="STANDBY"><playStatus></playStatus></nowPlaying>',
+        ), patch("soundtouch_bridge.server.press_speaker_key") as press_key, patch(
+            "soundtouch_bridge.server.select_content_item"
+        ) as select:
+            result = push_station_to_speaker(speaker, raw)
+
+        press_key.assert_not_called()
+        select.assert_called_once_with("192.168.1.50", raw)
+        self.assertEqual(result["woke_from_standby"], False)
+        self.assertEqual(result["before"]["source"], "STANDBY")
+
+    def test_push_station_to_speaker_wakes_standby_when_requested(self) -> None:
         speaker = {"device_id": "speaker-1", "ip": "192.168.1.50"}
         raw = '<ContentItem source="SIRIUSXM_EVEREST" type="stationurl" location="/playback/station/big80s?preset_play=True"><itemName>80s on 8</itemName></ContentItem>'
         responses = [
@@ -1123,7 +1139,7 @@ class SiriusXmAuthTests(unittest.TestCase):
         ) as press_key, patch("soundtouch_bridge.server.select_content_item") as select, patch(
             "soundtouch_bridge.server.time.sleep"
         ) as sleep:
-            result = push_station_to_speaker(speaker, raw)
+            result = push_station_to_speaker(speaker, raw, wake=True)
 
         press_key.assert_called_once_with("192.168.1.50", "POWER")
         select.assert_called_once_with("192.168.1.50", raw)
@@ -1616,14 +1632,17 @@ class SiriusXmAuthTests(unittest.TestCase):
         self.assertIn("Use iHeart", ADMIN_HTML)
         self.assertIn("Preserved iHeart preset.", ADMIN_HTML)
 
-    def test_play_page_exposes_station_browser(self) -> None:
-        self.assertIn("Push To Speaker", PLAY_HTML)
+    def test_play_page_exposes_isolated_experiment_station_browser(self) -> None:
+        self.assertIn("Experimental Play Lab", PLAY_HTML)
+        self.assertIn("Does not write presets or aliases", PLAY_HTML)
         self.assertIn("sourceTabs", PLAY_HTML)
         self.assertIn("station-grid", PLAY_HTML)
         self.assertIn("data-source=\"SIRIUSXM\"", PLAY_HTML)
         self.assertIn("pushStation", PLAY_HTML)
+        self.assertIn("wakeSpeaker", PLAY_HTML)
+        self.assertIn("/api/experiments/play/speakers/", PLAY_HTML)
         self.assertNotIn("playSlot", PLAY_HTML)
-        self.assertIn(">Push</button>", PLAY_HTML)
+        self.assertIn(">Try Select</button>", PLAY_HTML)
 
     def test_tunein_search_route_is_registered(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1678,10 +1697,10 @@ class SiriusXmAuthTests(unittest.TestCase):
             store = Store(os.path.join(tmp, "state.sqlite3"))
             server = SoundTouchBridgeServer(("127.0.0.1", 0), store, "http://ubuntu.example:8000")
             try:
-                paths = ["/play", "/api/speakers/000C8A8DAF9E/play"]
+                paths = ["/play", "/api/experiments/play/speakers/000C8A8DAF9E/select"]
                 matched = {
                     path: any(
-                        method == ("POST" if path.endswith("/play") and path.startswith("/api/") else "GET")
+                        method == ("POST" if path.startswith("/api/") else "GET")
                         and pattern.fullmatch(path)
                         for method, pattern, _handler in server.routes
                     )
@@ -1691,7 +1710,7 @@ class SiriusXmAuthTests(unittest.TestCase):
                 server.server_close()
                 store.conn.close()
 
-        self.assertEqual(matched, {"/play": True, "/api/speakers/000C8A8DAF9E/play": True})
+        self.assertEqual(matched, {"/play": True, "/api/experiments/play/speakers/000C8A8DAF9E/select": True})
 
     def test_siriusxm_descriptor_route_is_registered(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
