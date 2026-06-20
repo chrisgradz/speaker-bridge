@@ -258,7 +258,14 @@ def preset_to_xml(preset: dict[str, Any]) -> str:
         source_name = "LOCAL_INTERNET_RADIO"
         provider = "11"
         source_id = "3"
-        content_item = ""
+        name = escape(preset.get("name", ""))
+        image = escape(preset.get("image_url", ""))
+        content_item = (
+            f'<ContentItem source="LOCAL_INTERNET_RADIO" type="stationurl" location="{location}" isPresetable="true">'
+            f"<itemName>{name}</itemName>"
+            f"<containerArt>{image}</containerArt>"
+            "</ContentItem>"
+        )
     name = escape(preset.get("name", ""))
     image = escape(preset.get("image_url", ""))
     return (

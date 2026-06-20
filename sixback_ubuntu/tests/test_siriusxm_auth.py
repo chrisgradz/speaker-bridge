@@ -968,6 +968,21 @@ class SiriusXmAuthTests(unittest.TestCase):
         self.assertIn('location="/v1/playback/station/s17947"', xml)
         self.assertIn("<itemName>The Answer Chicago</itemName>", xml)
 
+    def test_direct_stream_preset_renders_content_item_for_speaker_store(self) -> None:
+        preset = {
+            "slot": 5,
+            "source": "LOCAL_INTERNET_RADIO",
+            "name": "Big 95.5",
+            "stream_url": "https://stream.revma.ihrhls.com/zc8731",
+            "image_url": "https://i.iheart.com/logo.png",
+        }
+
+        xml = preset_to_xml(preset)
+
+        self.assertIn('<ContentItem source="LOCAL_INTERNET_RADIO" type="stationurl"', xml)
+        self.assertIn('location="https://stream.revma.ihrhls.com/zc8731"', xml)
+        self.assertIn("<itemName>Big 95.5</itemName>", xml)
+
     def test_tunein_station_returns_audio_stream_shape(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             store = Store(os.path.join(tmp, "state.sqlite3"))
