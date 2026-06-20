@@ -126,6 +126,13 @@ def sources_xml(store: Store | None = None, account_id: str = "") -> str:
             parts.append(_source_xml(str(idx), "SiriusXM", "38", "SIRIUSXM_EVEREST", username))
     else:
         parts.append(_source_xml("4", "SiriusXM", "38", "SIRIUSXM_EVEREST", ""))
+    iheart_accounts = store.source_accounts_for_raw_source("IHEART", account_id) if store else []
+    if iheart_accounts:
+        for idx, account in enumerate(iheart_accounts, start=5 + max(0, len(accounts) - 1)):
+            username = escape(account["source_account"])
+            parts.append(_source_xml(str(idx), "iHeart", "16", "IHEART", username))
+    else:
+        parts.append(_source_xml(str(5 + max(0, len(accounts) - 1)), "iHeart", "16", "IHEART", ""))
     parts.append("</sources>")
     return "".join(parts)
 

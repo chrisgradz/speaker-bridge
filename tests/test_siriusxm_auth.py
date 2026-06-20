@@ -12,6 +12,7 @@ from unittest.mock import patch
 
 from soundtouch_bridge.db import Store
 from soundtouch_bridge.cloud import (
+    account_full,
     siriusxm_now_playing,
     siriusxm_station_display_experiment,
     siriusxm_station,
@@ -978,6 +979,68 @@ class SiriusXmAuthTests(unittest.TestCase):
         self.assertIn("<sourcename>SIRIUSXM_EVEREST</sourcename>", xml)
         self.assertIn("<username>source-account-123</username>", xml)
         self.assertIn('location="/playback/station/classicvinyl?preset_play=True"', xml)
+
+    def test_account_full_includes_iheart_source_from_preserved_preset(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Store(os.path.join(tmp, "state.sqlite3"))
+            try:
+                store.upsert_speaker(
+                    {
+                        "device_id": "speaker-1",
+                        "ip": "192.168.10.22",
+                        "name": "STS1",
+                        "model": "SoundTouch",
+                        "firmware": "27.0",
+                        "account_id": "account-1",
+                    }
+                )
+                store.set_preset(
+                    "speaker-1",
+                    {
+                        "slot": 5,
+                        "source": "OPAQUE",
+                        "name": "BIG 95.5 FM",
+                        "station_id": "",
+                        "stream_url": "",
+                        "image_url": "",
+                        "raw_content_item": (
+                            '<ContentItem source="IHEART" '
+                            'location="&lt;IHeartCILocation id=&quot;857&quot; locationType=&quot;LIVE_STATION&quot; /&gt;" '
+                            'sourceAccount="cgrzadziel@example.com" isPresetable="true">'
+                            "<itemName>BIG 95.5 FM</itemName></ContentItem>"
+                        ),
+                    },
+                )
+
+                xml = account_full(store, "account-1").decode("utf-8")
+            finally:
+                store.conn.close()
+
+        self.assertIn("<sourcename>IHEART</sourcename>", xml)
+        self.assertIn("<sourceproviderid>16</sourceproviderid>", xml)
+        self.assertIn("<username>cgrzadziel@example.com</username>", xml)
+
+    def test_account_full_includes_default_iheart_source_without_preserved_account(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Store(os.path.join(tmp, "state.sqlite3"))
+            try:
+                store.upsert_speaker(
+                    {
+                        "device_id": "speaker-1",
+                        "ip": "192.168.10.22",
+                        "name": "STS1",
+                        "model": "SoundTouch",
+                        "firmware": "27.0",
+                        "account_id": "account-1",
+                    }
+                )
+
+                xml = account_full(store, "account-1").decode("utf-8")
+            finally:
+                store.conn.close()
+
+        self.assertIn("<sourcename>IHEART</sourcename>", xml)
+        self.assertIn("<sourceproviderid>16</sourceproviderid>", xml)
 
     def test_store_preset_xml_wraps_content_item_for_speaker_store(self) -> None:
         raw = (

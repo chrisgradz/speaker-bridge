@@ -343,13 +343,17 @@ class Store:
         return [dict(row) for row in rows]
 
     def siriusxm_source_accounts(self, account_id: str = "") -> list[dict[str, Any]]:
+        return self.source_accounts_for_raw_source("SIRIUSXM_EVEREST", account_id)
+
+    def source_accounts_for_raw_source(self, raw_source: str, account_id: str = "") -> list[dict[str, Any]]:
+        raw_source = raw_source.strip().upper()
         speakers = self.speakers_for_account(account_id)
         accounts: dict[str, dict[str, Any]] = {}
         for speaker in speakers:
             for preset in self.presets_for_speaker(speaker["device_id"]):
-                if preset.get("source") != "SIRIUSXM":
-                    continue
                 raw = str(preset.get("raw_content_item", ""))
+                if _xml_attr(raw, "source").strip().upper() != raw_source:
+                    continue
                 source_account = _xml_attr(raw, "sourceAccount")
                 if not source_account:
                     continue
@@ -357,7 +361,7 @@ class Store:
                     source_account,
                     {
                         "source_account": source_account,
-                        "name": preset.get("name") or "SiriusXM",
+                        "name": preset.get("name") or raw_source,
                     },
                 )
                 if not existing.get("name") and preset.get("name"):
