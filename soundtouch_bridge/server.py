@@ -2187,13 +2187,16 @@ PLAY_HTML = """<!doctype html>
       display: grid;
       place-items: center;
       border-radius: 6px;
+      padding: 12px;
       background: #eef2f6;
       overflow: hidden;
     }
     .station-art img {
-      width: 100%;
-      height: 100%;
-      object-fit: contain;
+      width: auto;
+      height: auto;
+      max-width: 100%;
+      max-height: 100%;
+      object-fit: scale-down;
     }
     .station-title {
       min-height: 44px;
