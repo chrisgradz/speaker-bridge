@@ -36,6 +36,7 @@ from sixback_ubuntu.sixback_ubuntu.server import (
     build_siriusxm_content_item,
     rewrite_siriusxm_preset_content_item,
     handle_siriusxm_now_playing_debug,
+    iheart_proxy_stream_url,
     normalize_iheart_search_station,
     normalize_siriusxm_catalog_channel,
     maybe_override_siriusxm_preset_press,
@@ -1157,6 +1158,12 @@ class SiriusXmAuthTests(unittest.TestCase):
 
         self.assertEqual(stream_url, "https://stream.example/live")
 
+    def test_iheart_proxy_stream_url_uses_local_server(self) -> None:
+        self.assertEqual(
+            iheart_proxy_stream_url("http://ubuntu.example:8000", "8731"),
+            "http://ubuntu.example:8000/iheart/proxy/8731/stream",
+        )
+
     def test_siriusxm_metadata_proxy_debug_identifies_hls_not_icy(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             store = Store(os.path.join(tmp, "state.sqlite3"))
@@ -1398,6 +1405,7 @@ class SiriusXmAuthTests(unittest.TestCase):
                 paths = [
                     "/api/iheart/search",
                     "/api/iheart/stations/8731/stream",
+                    "/iheart/proxy/8731/stream",
                 ]
                 matched = {
                     path: any(method == "GET" and pattern.fullmatch(path) for method, pattern, _handler in server.routes)
@@ -1407,7 +1415,14 @@ class SiriusXmAuthTests(unittest.TestCase):
                 server.server_close()
                 store.conn.close()
 
-        self.assertEqual(matched, {"/api/iheart/search": True, "/api/iheart/stations/8731/stream": True})
+        self.assertEqual(
+            matched,
+            {
+                "/api/iheart/search": True,
+                "/api/iheart/stations/8731/stream": True,
+                "/iheart/proxy/8731/stream": True,
+            },
+        )
 
     def test_admin_ui_persists_save_confirmation_after_reload(self) -> None:
         self.assertIn("cardNotices", ADMIN_HTML)

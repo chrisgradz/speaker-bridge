@@ -160,6 +160,7 @@ class SixBackServer(ThreadingHTTPServer):
         self.route("GET", r"/api/tunein/stations/(?P<station_id>[^/]+)/icy-debug", handle_tunein_icy_debug)
         self.route("GET", r"/api/iheart/search", handle_iheart_search)
         self.route("GET", r"/api/iheart/stations/(?P<station_id>[^/]+)/stream", handle_iheart_station_stream)
+        self.route("GET", r"/iheart/proxy/(?P<station_id>[^/]+)/stream", handle_iheart_proxy_stream)
         self.route(
             "GET",
             r"/api/siriusxm/channels/(?P<station_id>[^/]+)/now-playing-debug",
@@ -807,11 +808,40 @@ def handle_iheart_search(req: SixBackHandler) -> None:
 
 def handle_iheart_station_stream(req: SixBackHandler, station_id: str) -> None:
     try:
-        stream_url = resolve_iheart_stream_url(station_id)
+        upstream_stream_url = resolve_iheart_stream_url(station_id)
     except Exception as exc:
         req.send_json({"error": "iheart_stream_failed", "message": str(exc)}, 502)
         return
-    req.send_json({"station_id": station_id, "stream_url": stream_url})
+    req.send_json(
+        {
+            "station_id": station_id,
+            "stream_url": iheart_proxy_stream_url(req.server.public_base, station_id),
+            "upstream_stream_url": upstream_stream_url,
+        }
+    )
+
+
+def handle_iheart_proxy_stream(req: SixBackHandler, station_id: str) -> None:
+    try:
+        upstream_stream_url = resolve_iheart_stream_url(station_id)
+        with urllib.request.urlopen(upstream_stream_url, timeout=10) as resp:
+            content_type = resp.headers.get("Content-Type") or "audio/aac"
+            req.send_response(200)
+            req.send_header("Content-Type", content_type)
+            req.send_header("Cache-Control", "no-store")
+            req.end_headers()
+            while True:
+                chunk = resp.read(16384)
+                if not chunk:
+                    break
+                req.wfile.write(chunk)
+    except (BrokenPipeError, ConnectionResetError):
+        print(f"[iheart-proxy] client disconnected station={station_id}", flush=True)
+    except Exception as exc:
+        try:
+            req.send_json({"error": "iheart_proxy_failed", "message": str(exc)}, 502)
+        except (BrokenPipeError, ConnectionResetError):
+            print(f"[iheart-proxy] client disconnected after error station={station_id}", flush=True)
 
 
 def search_tunein_stations(query: str, limit: int = 60) -> list[Json]:
@@ -901,6 +931,10 @@ def normalize_iheart_search_station(item: Any) -> Json:
         "description": description,
         "image_url": str(item.get("logo") or item.get("newlogo") or "").strip(),
     }
+
+
+def iheart_proxy_stream_url(base_url: str, station_id: str) -> str:
+    return f"{base_url.strip().rstrip('/')}/iheart/proxy/{urllib.parse.quote(station_id.strip())}/stream"
 
 
 def resolve_iheart_stream_url(station_id: str) -> str:
