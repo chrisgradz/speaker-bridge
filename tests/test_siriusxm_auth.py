@@ -1038,7 +1038,7 @@ class SiriusXmAuthTests(unittest.TestCase):
         self.assertIn("name=WGN+AM+720", raw)
         self.assertIn("<itemName>WGN AM 720</itemName>", raw)
 
-    def test_build_play_content_item_renders_siriusxm_selection_as_direct_local_playlist(self) -> None:
+    def test_build_play_content_item_renders_siriusxm_selection_as_native_provider_item(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             store = Store(os.path.join(tmp, "state.sqlite3"))
             try:
@@ -1073,9 +1073,10 @@ class SiriusXmAuthTests(unittest.TestCase):
             finally:
                 store.conn.close()
 
-        self.assertIn('<ContentItem source="LOCAL_INTERNET_RADIO" type="url"', raw)
-        self.assertIn("http://ubuntu.example:8000/siriusxm/proxy/big80s/playlist.m3u8", raw)
-        self.assertNotIn("/siriusxm/stations/big80s/station.json", raw)
+        self.assertIn('<ContentItem source="SIRIUSXM_EVEREST" type="stationurl"', raw)
+        self.assertIn('location="/playback/station/big80s?preset_play=True"', raw)
+        self.assertIn('sourceAccount="source-account-123"', raw)
+        self.assertNotIn("siriusxm/proxy/big80s/playlist.m3u8", raw)
         self.assertEqual(channel["name"], "80s on 8")
         self.assertEqual(channel["entity_url"], "https://www.siriusxm.com/player/channel-linear/entity/example")
 
@@ -1083,11 +1084,24 @@ class SiriusXmAuthTests(unittest.TestCase):
         speaker = {"device_id": "speaker-1", "ip": "192.168.1.50"}
         raw = '<ContentItem source="TUNEIN" type="stationurl" location="/v1/playback/station/s17947"><itemName>Station</itemName></ContentItem>'
 
-        with patch("soundtouch_bridge.server.select_content_item") as select:
+        with patch("soundtouch_bridge.server.select_content_item") as select, patch(
+            "soundtouch_bridge.server.now_playing_xml",
+            return_value=(
+                '<nowPlaying source="TUNEIN"><ContentItem source="TUNEIN" '
+                'location="/v1/playback/station/s17947"><itemName>Station</itemName>'
+                "</ContentItem><playStatus>PLAY_STATE</playStatus>"
+                "<streamType>RADIO_STREAMING</streamType></nowPlaying>"
+            ),
+        ):
             result = push_station_to_speaker(speaker, raw)
 
         select.assert_called_once_with("192.168.1.50", raw)
-        self.assertEqual(result, {"attempted": True, "ok": True, "message": "sent to speaker"})
+        self.assertEqual(result["attempted"], True)
+        self.assertEqual(result["ok"], True)
+        self.assertEqual(result["message"], "sent to speaker")
+        self.assertEqual(result["now_playing"]["source"], "TUNEIN")
+        self.assertEqual(result["now_playing"]["location"], "/v1/playback/station/s17947")
+        self.assertEqual(result["now_playing"]["item_name"], "Station")
 
     def test_tunein_station_returns_audio_stream_shape(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

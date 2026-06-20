@@ -95,6 +95,10 @@ def select_content_item(ip: str, raw_content_item: str) -> None:
     _http_post_xml(f"http://{ip}:{BOSE_BMX_PORT}/select", raw_content_item, timeout=4)
 
 
+def now_playing_xml(ip: str) -> str:
+    return _http_get(f"http://{ip}:{BOSE_BMX_PORT}/now_playing", timeout=4).decode("utf-8", "replace")
+
+
 def _normalize_preset(
     slot: str,
     source: str,

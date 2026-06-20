@@ -43,6 +43,7 @@ from .icy import inspect_icy_stream
 from .speaker import (
     import_presets,
     migrate_speaker,
+    now_playing_xml,
     probe_speaker,
     select_content_item,
     store_preset,
@@ -505,12 +506,8 @@ def build_play_content_item(store: Store, device_id: str, base_url: str, body: J
                 "stream_url": existing_channel.get("stream_url", ""),
             },
         )
-        return build_basic_content_item(
-            "LOCAL_INTERNET_RADIO",
-            siriusxm_playlist_url(base_url, station_id),
-            name,
-            image_url,
-        )
+        source_account = first_siriusxm_source_account(store, device_id)
+        return build_siriusxm_content_item(station_id, name, image_url, source_account)
     if source == "IHEART":
         if not station_id:
             raise ValueError("station_id is required for iHeart")
@@ -551,8 +548,30 @@ def push_station_to_speaker(speaker: Json, raw_content_item: str) -> Json:
         message = f"{type(exc).__name__}: {exc}"
         print(f"[push-play] {speaker.get('device_id', '')} failed: {message}", flush=True)
         return {"attempted": True, "ok": False, "message": message}
-    print(f"[push-play] {speaker.get('device_id', '')} sent /select", flush=True)
-    return {"attempted": True, "ok": True, "message": "sent to speaker"}
+    snapshot = speaker_now_playing_snapshot(ip)
+    print(
+        f"[push-play] {speaker.get('device_id', '')} sent /select"
+        f" source={snapshot.get('source', '')} location={snapshot.get('location', '')}"
+        f" status={snapshot.get('play_status', '')}",
+        flush=True,
+    )
+    return {"attempted": True, "ok": True, "message": "sent to speaker", "now_playing": snapshot}
+
+
+def speaker_now_playing_snapshot(ip: str) -> Json:
+    try:
+        xml = now_playing_xml(ip)
+    except Exception as exc:
+        return {"error": f"{type(exc).__name__}: {exc}"}
+    content_item = re.search(r"(<ContentItem\b.*?</ContentItem>)", xml, re.S | re.I)
+    raw = content_item.group(1) if content_item else ""
+    return {
+        "source": xml_attr(raw, "source") or xml_attr(xml, "source"),
+        "location": xml_attr(raw, "location"),
+        "item_name": xml_tag(raw, "itemName") or xml_tag(xml, "stationName"),
+        "play_status": xml_tag(xml, "playStatus"),
+        "stream_type": xml_tag(xml, "streamType"),
+    }
 
 
 def rewrite_siriusxm_preset_content_item(preset: Json, experiment: bool) -> Json:
@@ -597,6 +616,13 @@ def xml_attr(text: str, name: str) -> str:
         .replace("&quot;", '"')
         .replace("&apos;", "'")
     )
+
+
+def xml_tag(text: str, name: str) -> str:
+    match = re.search(rf"<{re.escape(name)}\b[^>]*>(.*?)</{re.escape(name)}>", text, re.S | re.I)
+    if not match:
+        return ""
+    return re.sub(r"<[^>]+>", "", match.group(1)).strip()
 
 
 def remember_siriusxm_station_alias(store: Store, old_preset: Json, new_preset: Json) -> None:
