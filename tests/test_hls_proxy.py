@@ -18,7 +18,7 @@ from soundtouch_bridge.server import (
     trim_hls_playlist,
     validate_siriusxm_proxy_url,
 )
-from soundtouch_bridge.icy import inspect_icy_stream, parse_icy_metadata_block
+from soundtouch_bridge.icy import MAX_ICY_METAINT, inspect_icy_stream, parse_icy_metadata_block
 
 
 class FakeServer:
@@ -389,6 +389,71 @@ class HlsProxyTests(unittest.TestCase):
         self.assertEqual(result["metadata_packets_checked"], 2)
         self.assertEqual(result["metadata"]["artist"], "Flying Lizards")
         self.assertEqual(result["metadata"]["title"], "Money")
+
+    def test_inspect_icy_stream_rejects_huge_metadata_interval_before_reading(self) -> None:
+        class FakeHeaders:
+            def get(self, name: str, default: str = "") -> str:
+                return {"icy-metaint": str(MAX_ICY_METAINT + 1), "content-type": "audio/mpeg"}.get(
+                    name.lower(), default
+                )
+
+        class FakeResponse:
+            headers = FakeHeaders()
+            status = 200
+
+            def __init__(self) -> None:
+                self.read_sizes: list[int] = []
+                self.closed = False
+
+            def read(self, size: int = -1) -> bytes:
+                self.read_sizes.append(size)
+                return b""
+
+            def close(self) -> None:
+                self.closed = True
+
+        response = FakeResponse()
+
+        result = inspect_icy_stream("https://stream.example.test/live.mp3", opener=lambda request, timeout=8: response)
+
+        self.assertEqual(result["error"], "unsupported_metadata_interval")
+        self.assertEqual(result["icy_metaint"], MAX_ICY_METAINT + 1)
+        self.assertEqual(result["max_icy_metaint"], MAX_ICY_METAINT)
+        self.assertFalse(result["icy_metadata_supported"])
+        self.assertEqual(response.read_sizes, [])
+        self.assertTrue(response.closed)
+
+    def test_inspect_icy_stream_rejects_oversized_metadata_block(self) -> None:
+        class FakeHeaders:
+            def get(self, name: str, default: str = "") -> str:
+                return {"icy-metaint": "4", "content-type": "audio/mpeg"}.get(name.lower(), default)
+
+        class FakeResponse:
+            headers = FakeHeaders()
+            status = 200
+
+            def __init__(self) -> None:
+                self.body = b"DATA" + bytes([255])
+                self.read_sizes: list[int] = []
+
+            def read(self, size: int = -1) -> bytes:
+                self.read_sizes.append(size)
+                chunk = self.body[:size]
+                self.body = self.body[size:]
+                return chunk
+
+        response = FakeResponse()
+
+        result = inspect_icy_stream(
+            "https://stream.example.test/live.mp3",
+            opener=lambda request, timeout=8: response,
+            max_metadata_block=1024,
+        )
+
+        self.assertEqual(result["error"], "unsupported_metadata_block")
+        self.assertEqual(result["metadata_length"], 4080)
+        self.assertEqual(result["max_metadata_length"], 1024)
+        self.assertEqual(response.read_sizes, [4, 1])
 
 
 if __name__ == "__main__":

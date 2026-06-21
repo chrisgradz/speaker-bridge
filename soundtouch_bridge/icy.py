@@ -4,6 +4,9 @@ import re
 import urllib.request
 from typing import Any, Callable
 
+MAX_ICY_METAINT = 1024 * 1024
+MAX_ICY_METADATA_BLOCK = 16 * 1024
+
 
 def parse_icy_metadata_block(block: bytes) -> dict[str, str]:
     text = block.rstrip(b"\0").decode("utf-8", "replace").strip()
@@ -31,6 +34,8 @@ def inspect_icy_stream(
     opener: Callable[..., Any] | None = None,
     timeout: float = 8.0,
     max_packets: int = 5,
+    max_metaint: int = MAX_ICY_METAINT,
+    max_metadata_block: int = MAX_ICY_METADATA_BLOCK,
 ) -> dict[str, Any]:
     request = urllib.request.Request(
         stream_url,
@@ -55,6 +60,11 @@ def inspect_icy_stream(
         }
         if metaint <= 0:
             return result
+        if metaint > max_metaint:
+            result["icy_metadata_supported"] = False
+            result["error"] = "unsupported_metadata_interval"
+            result["max_icy_metaint"] = max_metaint
+            return result
         for _index in range(max_packets):
             audio = response.read(metaint)
             if len(audio) < metaint:
@@ -67,6 +77,10 @@ def inspect_icy_stream(
             result["metadata_length"] = metadata_length
             if metadata_length <= 0:
                 continue
+            if metadata_length > max_metadata_block:
+                result["error"] = "unsupported_metadata_block"
+                result["max_metadata_length"] = max_metadata_block
+                return result
             metadata = parse_icy_metadata_block(response.read(metadata_length))
             if metadata.get("raw"):
                 result["metadata"] = metadata
