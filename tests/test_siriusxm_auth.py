@@ -71,6 +71,7 @@ from soundtouch_bridge.server import (
     sanitize_siriusxm_error,
     search_iheart_stations,
     search_tunein_stations,
+    should_retry_siriusxm_fetch,
     speaker_now_playing_snapshot,
     siriusxm_metadata_proxy_debug_payload,
     tunein_icy_debug_payload,
@@ -382,6 +383,35 @@ class SiriusXmAuthTests(unittest.TestCase):
         finally:
             unauthorized.close()
             server_error.close()
+
+    def test_siriusxm_fetch_retry_refreshes_on_any_upstream_http_error(self) -> None:
+        session = SimpleNamespace(credentials=SiriusXmCredentials("listener@example.com", "secret password"))
+        stale_not_found = urllib.error.HTTPError(
+            "https://live.example.test/expired.m3u8",
+            404,
+            "Not Found",
+            hdrs={},
+            fp=BytesIO(b""),
+        )
+        try:
+            self.assertTrue(should_retry_siriusxm_fetch(session, stale_not_found))
+            self.assertFalse(should_retry_siriusxm_fetch(session, urllib.error.URLError("timeout")))
+        finally:
+            stale_not_found.close()
+
+    def test_siriusxm_fetch_retry_requires_configured_credentials(self) -> None:
+        session = SimpleNamespace(credentials=SiriusXmCredentials("", ""))
+        stale_forbidden = urllib.error.HTTPError(
+            "https://live.example.test/expired.m3u8",
+            403,
+            "Forbidden",
+            hdrs={},
+            fp=BytesIO(b""),
+        )
+        try:
+            self.assertFalse(should_retry_siriusxm_fetch(session, stale_forbidden))
+        finally:
+            stale_forbidden.close()
 
     def test_store_keeps_refresh_metadata_with_channel(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -1531,7 +1531,9 @@ def resolve_siriusxm_stream_url(store: Store, session: SiriusXmSession, station_
 
 
 def should_retry_siriusxm_fetch(session: SiriusXmSession, exc: Exception) -> bool:
-    return session.credentials.configured and should_refresh_stream("configured", exc)
+    if not session.credentials.configured:
+        return False
+    return isinstance(exc, urllib.error.HTTPError)
 
 
 def is_siriusxm_auth_error(exc: Exception) -> bool:
