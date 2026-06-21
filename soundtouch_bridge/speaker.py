@@ -4,6 +4,7 @@ import re
 import socket
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
 from html import escape
@@ -13,6 +14,7 @@ from typing import Any
 BOSE_BMX_PORT = 8090
 BOSE_TELNET_PORT = 17000
 BOSE_TS = "2012-09-19T12:43:00.000+00:00"
+SPEAKER_HOST_RE = re.compile(r"^[A-Za-z0-9.-]+$")
 
 
 def _http_get(url: str, timeout: float = 5.0) -> bytes:
@@ -32,12 +34,42 @@ def _http_post_xml(url: str, body: str, timeout: float = 5.0, content_type: str 
         return resp.read()
 
 
+def validate_speaker_host(host: str) -> str:
+    host = host.strip()
+    if not host:
+        raise ValueError("speaker host is required")
+    if any(ord(ch) < 32 or ch.isspace() for ch in host):
+        raise ValueError("speaker host must not contain whitespace or control characters")
+    if any(ch in host for ch in "/?#@:"):
+        raise ValueError("speaker host must be a plain hostname or IP address without scheme, port, path, or query")
+    if not SPEAKER_HOST_RE.fullmatch(host):
+        raise ValueError("speaker host contains unsupported characters")
+    return host
+
+
+def validate_bridge_base_url(base_url: str) -> str:
+    base_url = base_url.strip().rstrip("/")
+    if not base_url:
+        raise ValueError("base_url is required")
+    if any(ord(ch) < 32 or ch.isspace() for ch in base_url):
+        raise ValueError("base_url must not contain whitespace or control characters")
+    parsed = urllib.parse.urlparse(base_url)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError("base_url must be an http:// or https:// URL")
+    if parsed.username or parsed.password:
+        raise ValueError("base_url must not include username or password")
+    if parsed.params or parsed.query or parsed.fragment:
+        raise ValueError("base_url must not include params, query, or fragment")
+    return urllib.parse.urlunparse((parsed.scheme, parsed.netloc, parsed.path.rstrip("/"), "", "", ""))
+
+
 def _text(node: ET.Element, tag: str) -> str:
     found = node.find(tag)
     return (found.text or "").strip() if found is not None else ""
 
 
 def probe_speaker(ip: str) -> dict[str, Any]:
+    ip = validate_speaker_host(ip)
     body = _http_get(f"http://{ip}:{BOSE_BMX_PORT}/info", timeout=6).decode("utf-8", "replace")
     root = ET.fromstring(body)
     device_id = root.attrib.get("deviceID", "").strip()
@@ -174,6 +206,8 @@ def _unescape(value: str) -> str:
 
 
 def migrate_speaker(ip: str, base_url: str) -> str:
+    ip = validate_speaker_host(ip)
+    base_url = validate_bridge_base_url(base_url)
     commands = [
         f"sys configuration bmxRegistryUrl {base_url}/bmx/registry/v1/services",
         f"sys configuration statsServerUrl {base_url}",

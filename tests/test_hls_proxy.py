@@ -6,14 +6,17 @@ from soundtouch_bridge.server import (
     SIRIUSXM_HLS_AES_KEY,
     build_id3_text_tag,
     cached_fetch_siriusxm_url,
+    handle_siriusxm_proxy_fetch,
     inject_id3_metadata,
     is_siriusxm_hls_key,
+    normalize_siriusxm_channel,
     report_response,
     rewrite_hls_playlist,
     should_capture_siriusxm_playlist_success,
     should_capture_siriusxm_fetch_success,
     summarize_hls_playlist,
     trim_hls_playlist,
+    validate_siriusxm_proxy_url,
 )
 from soundtouch_bridge.icy import inspect_icy_stream, parse_icy_metadata_block
 
@@ -23,6 +26,18 @@ class FakeServer:
 
     def __init__(self) -> None:
         self.siriusxm_proxy_urls: dict[str, str] = {}
+
+
+class FakeProxyRequest:
+    def __init__(self, path: str) -> None:
+        self.path = path
+        self.server = FakeServer()
+        self.sent_json = {}
+        self.sent_status = 0
+
+    def send_json(self, body, status: int = 200) -> None:
+        self.sent_json = body
+        self.sent_status = status
 
 
 class HlsProxyTests(unittest.TestCase):
@@ -92,23 +107,23 @@ class HlsProxyTests(unittest.TestCase):
         body = "\n".join(
             [
                 "#EXTM3U",
-                "#EXT-X-KEY:METHOD=AES-128,URI=\"https://example.test/key\"",
+                "#EXT-X-KEY:METHOD=AES-128,URI=\"https://siriusxm-priprodlive.akamaized.net/key\"",
                 "#EXTINF:9.75,",
                 "audio/segment.aac",
             ]
         )
 
-        rewritten = rewrite_hls_playlist(body, "https://example.test/live/playlist.m3u8", server)
+        rewritten = rewrite_hls_playlist(body, "https://siriusxm-priprodlive.akamaized.net/live/playlist.m3u8", server)
 
-        self.assertNotIn("https://example.test/key", rewritten)
+        self.assertNotIn("https://siriusxm-priprodlive.akamaized.net/key", rewritten)
         self.assertNotIn("audio/segment.aac", rewritten)
         self.assertNotIn("http://ubuntu.example:8000", rewritten)
         self.assertEqual(rewritten.count("/siriusxm/proxy/fetch/"), 2)
         self.assertEqual(
             sorted(server.siriusxm_proxy_urls.values()),
             [
-                "https://example.test/key",
-                "https://example.test/live/audio/segment.aac",
+                "https://siriusxm-priprodlive.akamaized.net/key",
+                "https://siriusxm-priprodlive.akamaized.net/live/audio/segment.aac",
             ],
         )
 
@@ -150,7 +165,7 @@ class HlsProxyTests(unittest.TestCase):
 
         rewritten = rewrite_hls_playlist(
             body,
-            "https://example.test/live/playlist.m3u8",
+            "https://siriusxm-priprodlive.akamaized.net/live/playlist.m3u8",
             server,
             station_id="big80s",
             inject_metadata=True,
@@ -173,7 +188,7 @@ class HlsProxyTests(unittest.TestCase):
 
         rewritten = rewrite_hls_playlist(
             body,
-            "https://example.test/live/playlist.m3u8",
+            "https://siriusxm-priprodlive.akamaized.net/live/playlist.m3u8",
             server,
             station_id="big80s",
             inject_metadata=True,
@@ -223,6 +238,57 @@ class HlsProxyTests(unittest.TestCase):
         )
         self.assertFalse(is_siriusxm_hls_key("https://api.edge-gateway.siriusxm.com/other/key"))
         self.assertFalse(is_siriusxm_hls_key("https://example.test/playback/key/v1/foo"))
+
+    def test_siriusxm_proxy_url_validation_allows_known_stream_hosts(self) -> None:
+        self.assertEqual(
+            validate_siriusxm_proxy_url("https://siriusxm-priprodlive.akamaized.net/live/playlist.m3u8"),
+            "https://siriusxm-priprodlive.akamaized.net/live/playlist.m3u8",
+        )
+        self.assertEqual(
+            validate_siriusxm_proxy_url(
+                "https://live-akc-prod-device.streaming.siriusxm.com/v1/session/sec-1/AAC_Data/firstwave/segment.aac"
+            ),
+            "https://live-akc-prod-device.streaming.siriusxm.com/v1/session/sec-1/AAC_Data/firstwave/segment.aac",
+        )
+
+    def test_siriusxm_proxy_url_validation_rejects_arbitrary_and_local_urls(self) -> None:
+        for url in (
+            "http://siriusxm-priprodlive.akamaized.net/live/playlist.m3u8",
+            "https://example.test/live/playlist.m3u8",
+            "https://127.0.0.1/private.m3u8",
+            "https://localhost/private.m3u8",
+            "https://user:pass@siriusxm-priprodlive.akamaized.net/live/playlist.m3u8",
+        ):
+            with self.subTest(url=url):
+                with self.assertRaises(ValueError):
+                    validate_siriusxm_proxy_url(url)
+
+    def test_normalize_siriusxm_channel_rejects_arbitrary_stream_urls(self) -> None:
+        with self.assertRaises(ValueError):
+            normalize_siriusxm_channel({"name": "bad", "stream_url": "http://127.0.0.1:9999/private.m3u8"})
+        with self.assertRaises(ValueError):
+            normalize_siriusxm_channel({"name": "bad", "stream_url": "https://example.invalid/audio.m3u8"})
+
+    def test_normalize_siriusxm_channel_accepts_siriusxm_stream_urls(self) -> None:
+        channel = normalize_siriusxm_channel(
+            {
+                "name": "1st Wave",
+                "stream_url": "https://siriusxm-priprodlive.akamaized.net/AAC_Data/firstwave/live.m3u8",
+            }
+        )
+
+        self.assertEqual(
+            channel["stream_url"],
+            "https://siriusxm-priprodlive.akamaized.net/AAC_Data/firstwave/live.m3u8",
+        )
+
+    def test_siriusxm_proxy_fetch_rejects_query_url_fallback(self) -> None:
+        req = FakeProxyRequest("/siriusxm/proxy/fetch?url=https://siriusxm-priprodlive.akamaized.net/live.m3u8")
+
+        handle_siriusxm_proxy_fetch(req)
+
+        self.assertEqual(req.sent_status, 400)
+        self.assertEqual(req.sent_json, {"error": "missing_proxy_token"})
 
     def test_siriusxm_success_capture_policy_skips_noisy_stream_fetches(self) -> None:
         self.assertFalse(should_capture_siriusxm_playlist_success())

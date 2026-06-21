@@ -60,6 +60,7 @@ from .siriusxm import (
 
 Json = dict[str, Any]
 SIRIUSXM_HLS_AES_KEY = base64.b64decode("0Nsco7MAgxowGvkUT8aYag==")
+MAX_SIRIUSXM_FETCH_BYTES = 8 * 1024 * 1024
 
 
 class SoundTouchBridgeHandler(BaseHTTPRequestHandler):
@@ -1027,8 +1028,7 @@ def normalize_siriusxm_channel(body: Json) -> Json:
     if stream_url:
         if "siriusxm.com/player/" in stream_url:
             raise ValueError("stream_url must be a direct playable audio URL, not the SiriusXM web player URL")
-        if not (stream_url.startswith("http://") or stream_url.startswith("https://")):
-            raise ValueError("stream_url must start with http:// or https://")
+        validate_siriusxm_proxy_url(stream_url)
     return {"name": name, "entity_url": entity_url, "stream_url": stream_url}
 
 
@@ -1594,9 +1594,13 @@ def handle_siriusxm_proxy_playlist_impl(req: SoundTouchBridgeHandler, station_id
 
 
 def handle_siriusxm_proxy_fetch(req: SoundTouchBridgeHandler, token: str = "") -> None:
-    query = parse_qs(urlparse(req.path).query)
-    target = req.server.siriusxm_proxy_urls.get(token, "") if token else (query.get("url") or [""])[0]
-    if not target.startswith("https://"):
+    if not token:
+        req.send_json({"error": "missing_proxy_token"}, 400)
+        return
+    target = req.server.siriusxm_proxy_urls.get(token, "")
+    try:
+        validate_siriusxm_proxy_url(target)
+    except ValueError:
         req.send_json({"error": "invalid_proxy_url"}, 400)
         return
     if is_siriusxm_hls_key(target):
@@ -1628,7 +1632,9 @@ def handle_siriusxm_proxy_fetch(req: SoundTouchBridgeHandler, token: str = "") -
 def handle_siriusxm_metadata_proxy_fetch(req: SoundTouchBridgeHandler, station_id: str, token: str) -> None:
     station_id = resolve_siriusxm_station_alias(req.server.store, station_id)
     target = req.server.siriusxm_proxy_urls.get(token, "")
-    if not target.startswith("https://"):
+    try:
+        validate_siriusxm_proxy_url(target)
+    except ValueError:
         req.send_json({"error": "invalid_proxy_url"}, 400)
         return
     if is_siriusxm_hls_key(target):
@@ -1652,6 +1658,7 @@ def handle_siriusxm_metadata_proxy_fetch(req: SoundTouchBridgeHandler, station_i
 
 
 def fetch_siriusxm_url(url: str) -> bytes:
+    validate_siriusxm_proxy_url(url)
     request = urllib.request.Request(
         url,
         headers={
@@ -1661,7 +1668,12 @@ def fetch_siriusxm_url(url: str) -> bytes:
         },
     )
     with urllib.request.urlopen(request, timeout=12) as response:
-        return response.read()
+        final_url = getattr(response, "url", url)
+        validate_siriusxm_proxy_url(str(final_url))
+        body = response.read(MAX_SIRIUSXM_FETCH_BYTES + 1)
+        if len(body) > MAX_SIRIUSXM_FETCH_BYTES:
+            raise ValueError("SiriusXM response exceeded maximum proxy size")
+        return body
 
 
 def cached_fetch_siriusxm_url(
@@ -1684,6 +1696,41 @@ def cached_fetch_siriusxm_url(
             if stored_at < cutoff:
                 cache.pop(key, None)
     return body
+
+
+def validate_siriusxm_proxy_url(url: str) -> str:
+    parsed = urlparse(url)
+    if parsed.scheme != "https" or not parsed.netloc:
+        raise ValueError("SiriusXM proxy URL must be an allowed absolute URL")
+    if parsed.username or parsed.password:
+        raise ValueError("SiriusXM proxy URL must not include credentials")
+    host = (parsed.hostname or "").lower().rstrip(".")
+    if not host:
+        raise ValueError("SiriusXM proxy URL must include a host")
+    if is_blocked_proxy_host(host):
+        raise ValueError("SiriusXM proxy URL host is not allowed")
+    if host == "api.edge-gateway.siriusxm.com":
+        return url
+    if host.endswith(".streaming.siriusxm.com") or host == "streaming.siriusxm.com":
+        return url
+    if host.endswith(".siriusxm.com") or host == "siriusxm.com":
+        return url
+    if host.endswith(".akamaized.net") and "siriusxm" in host:
+        return url
+    raise ValueError("SiriusXM proxy URL host is not allowed")
+
+
+def is_blocked_proxy_host(host: str) -> bool:
+    lowered = host.lower()
+    if lowered in {"localhost", "localhost.localdomain"} or lowered.endswith(".localhost"):
+        return True
+    try:
+        import ipaddress
+
+        ip = ipaddress.ip_address(lowered)
+    except ValueError:
+        return False
+    return ip.is_loopback or ip.is_link_local or ip.is_multicast or ip.is_unspecified or ip.is_private
 
 
 def is_siriusxm_hls_key(url: str) -> bool:
@@ -1850,6 +1897,7 @@ def proxy_url(
     station_id: str = "",
     inject_metadata: bool = False,
 ) -> str:
+    validate_siriusxm_proxy_url(target)
     token = hashlib.sha256(target.encode("utf-8")).hexdigest()[:24]
     server.siriusxm_proxy_urls[token] = target
     if inject_metadata and station_id and not is_siriusxm_hls_key(target):
