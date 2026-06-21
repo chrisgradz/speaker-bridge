@@ -1287,7 +1287,36 @@ class SiriusXmAuthTests(unittest.TestCase):
         self.assertNotIn("name=80s+on+8", raw)
         self.assertIn('sourceAccount="source-account-123"', raw)
         self.assertNotIn("siriusxm/proxy/big80s/playlist.m3u8", raw)
-        self.assertEqual(channels, [])
+        self.assertEqual(len(channels), 1)
+        self.assertEqual(channels[0]["station_id"], "big80s")
+        self.assertEqual(channels[0]["name"], "80s on 8")
+        self.assertEqual(channels[0]["entity_url"], "https://www.siriusxm.com/player/channel-linear/entity/example")
+
+    def test_build_play_content_item_persists_siriusxm_name_for_resolver_display(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Store(os.path.join(tmp, "state.sqlite3"))
+            try:
+                build_play_content_item(
+                    store,
+                    "speaker-1",
+                    "http://ubuntu.example:8000",
+                    {
+                        "source": "SIRIUSXM",
+                        "station_id": "yachtrockradio",
+                        "name": "Yacht Rock Radio",
+                        "image_url": "https://img.example/yacht.png",
+                    },
+                )
+
+                payload = json.loads(siriusxm_station(store, "yachtrockradio", "http://ubuntu.example:8000"))
+            finally:
+                store.conn.close()
+
+        self.assertEqual(payload["name"], "Yacht Rock Radio")
+        self.assertEqual(
+            payload["audio"]["streamUrl"],
+            "http://ubuntu.example:8000/siriusxm/proxy/yachtrockradio/playlist.m3u8",
+        )
 
     def test_normalize_siriusxm_content_item_location_removes_display_name_hint(self) -> None:
         raw = (

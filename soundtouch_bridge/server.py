@@ -549,6 +549,16 @@ def build_play_content_item(store: Store, device_id: str, base_url: str, body: J
         if not station_id:
             raise ValueError("station_id is required for SiriusXM")
         station_id = station_id.rstrip("/").split("/")[-1].split("?", 1)[0]
+        existing_channel = store.get_siriusxm_channel(station_id)
+        store.upsert_siriusxm_channel(
+            station_id,
+            {
+                "name": name,
+                "entity_url": str(body.get("entity_url", "")).strip()
+                or existing_channel.get("entity_url", ""),
+                "stream_url": existing_channel.get("stream_url", ""),
+            },
+        )
         source_account = first_siriusxm_source_account(store, device_id)
         return build_siriusxm_content_item(
             station_id,
