@@ -33,11 +33,18 @@ from soundtouch_bridge.siriusxm import (
 )
 from soundtouch_bridge.server import (
     ADMIN_HTML,
+    MAX_DIAGNOSTIC_BODY_CHARS,
+    MAX_JSON_REQUEST_BYTES,
+    MAX_REQUEST_BODY_BYTES,
     PLAY_HTML,
+    PayloadTooLarge,
+    SoundTouchBridgeHandler,
     SoundTouchBridgeServer,
     build_play_content_item,
     build_siriusxm_display_experiment_content_item,
     build_siriusxm_content_item,
+    drain_request_body,
+    handle_scmudc,
     rewrite_siriusxm_preset_content_item,
     handle_siriusxm_now_playing_debug,
     handle_tunein_station,
@@ -65,11 +72,66 @@ from soundtouch_bridge.server import (
     siriusxm_metadata_proxy_debug_payload,
     tunein_icy_debug_payload,
     push_station_to_speaker,
+    truncate_diagnostic_body,
 )
 from soundtouch_bridge.speaker import preset_to_xml, store_preset_xml
 
 
 class SiriusXmAuthTests(unittest.TestCase):
+    def test_read_json_rejects_oversized_request_before_reading(self) -> None:
+        req = object.__new__(SoundTouchBridgeHandler)
+        req.headers = {"Content-Length": str(MAX_JSON_REQUEST_BYTES + 1)}
+        req.rfile = BytesIO(b"")
+
+        with self.assertRaises(PayloadTooLarge):
+            req.read_json()
+
+        self.assertEqual(req.rfile.tell(), 0)
+
+    def test_drain_request_body_caps_large_body_reads(self) -> None:
+        req = SimpleNamespace(
+            headers={"Content-Length": str(MAX_REQUEST_BODY_BYTES + 25)},
+            rfile=BytesIO(b"x" * (MAX_REQUEST_BODY_BYTES + 25)),
+            close_connection=False,
+        )
+
+        drain_request_body(req)
+
+        self.assertEqual(req.rfile.tell(), MAX_REQUEST_BODY_BYTES)
+        self.assertTrue(req.close_connection)
+
+    def test_truncate_diagnostic_body_marks_oversized_storage(self) -> None:
+        body = "x" * (MAX_DIAGNOSTIC_BODY_CHARS + 10)
+
+        truncated = truncate_diagnostic_body(body)
+
+        self.assertLess(len(truncated), len(body))
+        self.assertLessEqual(len(truncated), MAX_DIAGNOSTIC_BODY_CHARS)
+        self.assertTrue(truncated.startswith("x"))
+        self.assertIn("[truncated 10 chars]", truncated)
+
+    def test_scmudc_event_storage_truncates_raw_body(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Store(os.path.join(tmp, "state.sqlite3"))
+            body = '{"events":[]}' + ("x" * MAX_DIAGNOSTIC_BODY_CHARS)
+            req = SimpleNamespace(
+                read_text=lambda: body,
+                server=SimpleNamespace(store=store),
+                sent_text="",
+                send_text=lambda text: setattr(req, "sent_text", text),
+            )
+            try:
+                handle_scmudc(req, "speaker-1")
+                events = store.recent_scmudc_events("speaker-1", limit=1)
+            finally:
+                store.conn.close()
+
+        self.assertEqual(req.sent_text, "")
+        self.assertEqual(len(events), 1)
+        self.assertLess(len(events[0]["body"]), len(body))
+        self.assertLessEqual(len(events[0]["body"]), MAX_DIAGNOSTIC_BODY_CHARS)
+        self.assertIn("[truncated", events[0]["body"])
+
     def test_load_credentials_from_env_file_and_redacts_status(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = os.path.join(tmp, "siriusxm.env")
@@ -789,6 +851,56 @@ class SiriusXmAuthTests(unittest.TestCase):
 
         self.assertEqual(resolved, "https://live.example.test/fresh.m3u8")
         self.assertEqual(saved["stream_url"], "https://live.example.test/fresh.m3u8")
+
+    def test_server_forced_refresh_relogs_in_after_auth_error(self) -> None:
+        class FakeSession:
+            credentials = SiriusXmCredentials("listener@example.com", "secret password")
+
+            def __init__(self) -> None:
+                self.refresh_calls = 0
+                self.login_calls = 0
+                self.error: urllib.error.HTTPError | None = None
+
+            def refresh_stream_url(self, station_id, channel):
+                self.refresh_calls += 1
+                if self.refresh_calls == 1:
+                    self.error = urllib.error.HTTPError(
+                        "https://live.example.test/expired.m3u8",
+                        403,
+                        "Forbidden",
+                        {},
+                        BytesIO(b""),
+                    )
+                    raise self.error
+                return "https://live.example.test/fresh-after-login.m3u8"
+
+            def login(self):
+                self.login_calls += 1
+
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Store(os.path.join(tmp, "state.sqlite3"))
+            store.upsert_siriusxm_channel(
+                "firstwave",
+                {
+                    "name": "1st Wave",
+                    "entity_url": "https://www.siriusxm.com/player/channel-linear/entity/entity-id",
+                    "stream_url": "https://expired.example.test/old-session.m3u8",
+                },
+            )
+            session = FakeSession()
+
+            try:
+                resolved = resolve_siriusxm_stream_url(store, session, "firstwave", force=True)
+                saved = store.get_siriusxm_channel("firstwave")
+            finally:
+                store.conn.close()
+
+        self.assertEqual(resolved, "https://live.example.test/fresh-after-login.m3u8")
+        self.assertEqual(saved["stream_url"], "https://live.example.test/fresh-after-login.m3u8")
+        self.assertEqual(session.login_calls, 1)
+        self.assertEqual(session.refresh_calls, 2)
+        if session.error:
+            session.error.close()
 
     def test_siriusxm_station_routes_to_proxy_before_stream_url_exists(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

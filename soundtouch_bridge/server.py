@@ -60,7 +60,14 @@ from .siriusxm import (
 
 Json = dict[str, Any]
 SIRIUSXM_HLS_AES_KEY = base64.b64decode("0Nsco7MAgxowGvkUT8aYag==")
+MAX_JSON_REQUEST_BYTES = 1024 * 1024
+MAX_REQUEST_BODY_BYTES = 1024 * 1024
+MAX_DIAGNOSTIC_BODY_CHARS = 64 * 1024
 MAX_SIRIUSXM_FETCH_BYTES = 8 * 1024 * 1024
+
+
+class PayloadTooLarge(ValueError):
+    pass
 
 
 class SoundTouchBridgeHandler(BaseHTTPRequestHandler):
@@ -88,16 +95,24 @@ class SoundTouchBridgeHandler(BaseHTTPRequestHandler):
             if route_method == method and match:
                 try:
                     handler(self, **match.groupdict())
+                except PayloadTooLarge as exc:
+                    self.close_connection = True
+                    self.send_json({"error": "payload_too_large", "message": str(exc)}, 413)
                 except Exception as exc:
                     self.send_json({"error": type(exc).__name__, "message": str(exc)}, 500)
                 return
         self.send_json({"error": "not_found", "path": path}, 404)
 
     def read_json(self) -> Json:
-        length = int(self.headers.get("Content-Length", "0") or "0")
+        length = content_length(self)
         if length == 0:
             return {}
+        if length > MAX_JSON_REQUEST_BYTES:
+            raise PayloadTooLarge(f"request body exceeds {MAX_JSON_REQUEST_BYTES} bytes")
         return json.loads(self.rfile.read(length).decode("utf-8"))
+
+    def read_text(self, max_bytes: int = MAX_REQUEST_BODY_BYTES) -> str:
+        return read_request_text(self, max_bytes=max_bytes)
 
     def send_bytes(self, body: bytes, status: int = 200, content_type: str = "application/octet-stream") -> None:
         try:
@@ -117,6 +132,44 @@ class SoundTouchBridgeHandler(BaseHTTPRequestHandler):
 
 
 RouteHandler = Callable[[SoundTouchBridgeHandler], None]
+
+
+def content_length(req: SoundTouchBridgeHandler) -> int:
+    raw = req.headers.get("Content-Length", "0") or "0"
+    try:
+        length = int(raw)
+    except ValueError as exc:
+        raise ValueError("invalid Content-Length") from exc
+    return max(length, 0)
+
+
+def read_request_text(req: SoundTouchBridgeHandler, max_bytes: int = MAX_REQUEST_BODY_BYTES) -> str:
+    length = content_length(req)
+    if length == 0:
+        return ""
+    if length > max_bytes:
+        req.close_connection = True
+        raise PayloadTooLarge(f"request body exceeds {max_bytes} bytes")
+    return req.rfile.read(length).decode("utf-8", "replace")
+
+
+def drain_request_body(req: SoundTouchBridgeHandler, max_bytes: int = MAX_REQUEST_BODY_BYTES) -> None:
+    length = content_length(req)
+    if length == 0:
+        return
+    if length > max_bytes:
+        req.rfile.read(max_bytes)
+        req.close_connection = True
+        return
+    req.rfile.read(length)
+
+
+def truncate_diagnostic_body(body: str, max_chars: int = MAX_DIAGNOSTIC_BODY_CHARS) -> str:
+    if len(body) <= max_chars:
+        return body
+    marker = f"\n[truncated {len(body) - max_chars} chars]"
+    keep = max(max_chars - len(marker), 0)
+    return body[:keep] + marker
 
 
 class SoundTouchBridgeServer(ThreadingHTTPServer):
@@ -1406,6 +1459,24 @@ def resolve_siriusxm_stream_url(store: Store, session: SiriusXmSession, station_
         try:
             stream_url = session.refresh_stream_url(station_id, channel)
         except Exception as exc:
+            if is_siriusxm_auth_error(exc):
+                try:
+                    session.login()
+                    stream_url = session.refresh_stream_url(station_id, channel)
+                except Exception as retry_exc:
+                    message = sanitize_siriusxm_error(str(retry_exc), session.credentials)
+                    store.update_siriusxm_stream_status(
+                        station_id,
+                        stream_url=None,
+                        last_refresh_error=message,
+                    )
+                    raise SiriusXmError(message) from retry_exc
+                store.update_siriusxm_stream_status(
+                    station_id,
+                    stream_url=stream_url,
+                    last_refresh_error="",
+                )
+                return stream_url
             message = sanitize_siriusxm_error(str(exc), session.credentials)
             store.update_siriusxm_stream_status(
                 station_id,
@@ -1426,6 +1497,10 @@ def resolve_siriusxm_stream_url(store: Store, session: SiriusXmSession, station_
 
 def should_retry_siriusxm_fetch(session: SiriusXmSession, exc: Exception) -> bool:
     return session.credentials.configured and should_refresh_stream("configured", exc)
+
+
+def is_siriusxm_auth_error(exc: Exception) -> bool:
+    return isinstance(exc, urllib.error.HTTPError) and exc.code in (401, 403)
 
 
 def sanitize_siriusxm_error(message: str, credentials: SiriusXmCredentials) -> str:
@@ -1461,9 +1536,7 @@ def handle_tunein_station(req: SoundTouchBridgeHandler, station_id: str) -> None
 
 
 def handle_siriusxm_token(req: SoundTouchBridgeHandler) -> None:
-    length = int(req.headers.get("Content-Length", "0") or "0")
-    if length:
-        req.rfile.read(length)
+    drain_request_body(req)
     body = siriusxm_token()
     capture_cloud_response(req, "siriusxm", body.decode("utf-8", "replace"))
     req.send_bytes(body, content_type="application/json")
@@ -1997,11 +2070,10 @@ def handle_siriusxm_needs_auth(req: SoundTouchBridgeHandler, station_id: str) ->
 
 
 def handle_scmudc(req: SoundTouchBridgeHandler, device_id: str) -> None:
-    length = int(req.headers.get("Content-Length", "0") or "0")
-    body = req.rfile.read(length).decode("utf-8", "replace") if length else ""
+    body = req.read_text()
     summary = summarize_scmudc(body)
     if summary:
-        req.server.store.add_scmudc_event(device_id, summary, body)
+        req.server.store.add_scmudc_event(device_id, summary, truncate_diagnostic_body(body))
         print(f"[scmudc] {device_id} {summary}")
     req.send_text("")
 
@@ -2119,7 +2191,7 @@ def handle_sources(req: SoundTouchBridgeHandler, account_id: str) -> None:
 
 def capture_cloud_response(req: SoundTouchBridgeHandler, account_id: str, body: str) -> None:
     path = urlparse(req.path).path
-    req.server.store.add_cloud_response(account_id, path, req.client_address[0], body)
+    req.server.store.add_cloud_response(account_id, path, req.client_address[0], truncate_diagnostic_body(body))
     print(f"[cloud-response] account={account_id} path={path} client={req.client_address[0]} bytes={len(body)}")
 
 
@@ -2147,8 +2219,7 @@ def handle_device_presets(req: SoundTouchBridgeHandler, account_id: str, device_
 
 
 def handle_device_add(req: SoundTouchBridgeHandler, account_id: str) -> None:
-    length = int(req.headers.get("Content-Length", "0") or "0")
-    body = req.rfile.read(length).decode("utf-8", "replace") if length else ""
+    body = req.read_text()
     match = re.search(r'deviceid="([^"]+)"', body)
     device_id = match.group(1) if match else ""
     response = (
@@ -2172,8 +2243,7 @@ def handle_device_add(req: SoundTouchBridgeHandler, account_id: str) -> None:
 
 
 def handle_source_add(req: SoundTouchBridgeHandler, account_id: str) -> None:
-    length = int(req.headers.get("Content-Length", "0") or "0")
-    body = req.rfile.read(length).decode("utf-8", "replace") if length else ""
+    body = req.read_text()
     username = _tag(body, "username")
     source_name = _tag(body, "sourcename") or "Stored Music"
     digest = hashlib.sha1(username.encode("utf-8")).hexdigest()
@@ -2213,16 +2283,12 @@ def report_response() -> Json:
 
 
 def handle_report(req: SoundTouchBridgeHandler, **_: str) -> None:
-    length = int(req.headers.get("Content-Length", "0") or "0")
-    if length:
-        req.rfile.read(length)
+    drain_request_body(req)
     req.send_json(report_response())
 
 
 def handle_empty(req: SoundTouchBridgeHandler, **_: str) -> None:
-    length = int(req.headers.get("Content-Length", "0") or "0")
-    if length:
-        req.rfile.read(length)
+    drain_request_body(req)
     req.send_text("")
 
 
