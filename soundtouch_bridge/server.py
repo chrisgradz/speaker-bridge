@@ -415,6 +415,10 @@ def normalize_admin_preset(body: Json, slot: int) -> Json:
 
 def prepare_admin_preset(store: Store, device_id: str, body: Json, slot: int) -> Json:
     preset = normalize_admin_preset(body, slot)
+    if preset["source"] == "SIRIUSXM" and is_preserved_siriusxm(preset):
+        preset["raw_content_item"] = normalize_siriusxm_content_item_location(preset["raw_content_item"])
+        preset["station_id"] = preset_station_slug(preset)
+        return preset
     if preset["source"] != "SIRIUSXM" or is_preserved_siriusxm(preset):
         return preset
     if not preset["station_id"]:
@@ -475,12 +479,8 @@ def build_siriusxm_content_item(
     name: str,
     image_url: str = "",
     source_account: str = "",
-    include_display_name_hint: bool = False,
 ) -> str:
-    query: dict[str, str] = {"preset_play": "True"}
-    if include_display_name_hint and name:
-        query["name"] = name
-    location = f"/playback/station/{station_id}?{urllib.parse.urlencode(query)}"
+    location = f"/playback/station/{station_id}?preset_play=True"
     item = (
         f'<ContentItem source="SIRIUSXM_EVEREST" type="stationurl" location="{escape(location)}" '
         f'sourceAccount="{escape(source_account)}" isPresetable="true">'
@@ -554,7 +554,6 @@ def build_play_content_item(store: Store, device_id: str, base_url: str, body: J
             name,
             image_url,
             source_account,
-            include_display_name_hint=True,
         )
     if source == "IHEART":
         if not station_id:
@@ -727,6 +726,22 @@ def rewrite_siriusxm_preset_content_item(preset: Json, experiment: bool) -> Json
             source_account,
         )
     return rewritten
+
+
+def normalize_siriusxm_content_item_location(raw_content_item: str) -> str:
+    location = xml_attr(raw_content_item, "location")
+    if not location.startswith("/playback/station/"):
+        return raw_content_item
+    parsed = urllib.parse.urlparse(location)
+    query = urllib.parse.parse_qs(parsed.query)
+    if query.get("name") == [] and "name" not in query:
+        return raw_content_item
+    kept = [(name, value) for name, values in query.items() if name != "name" for value in values]
+    normalized_query = urllib.parse.urlencode(kept)
+    normalized_location = urllib.parse.urlunparse(parsed._replace(query=normalized_query))
+    old_escaped = escape(location)
+    new_escaped = escape(normalized_location)
+    return raw_content_item.replace(f'location="{old_escaped}"', f'location="{new_escaped}"', 1)
 
 
 def xml_attr(text: str, name: str) -> str:

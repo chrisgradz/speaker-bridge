@@ -48,6 +48,7 @@ from soundtouch_bridge.server import (
     iheart_station_descriptor_url,
     iheart_station_with_proxy_urls,
     normalize_iheart_search_station,
+    normalize_siriusxm_content_item_location,
     normalize_siriusxm_catalog_channel,
     maybe_override_siriusxm_preset_press,
     normalize_tunein_search_station,
@@ -1282,10 +1283,52 @@ class SiriusXmAuthTests(unittest.TestCase):
                 store.conn.close()
 
         self.assertIn('<ContentItem source="SIRIUSXM_EVEREST" type="stationurl"', raw)
-        self.assertIn('location="/playback/station/big80s?preset_play=True&amp;name=80s+on+8"', raw)
+        self.assertIn('location="/playback/station/big80s?preset_play=True"', raw)
+        self.assertNotIn("name=80s+on+8", raw)
         self.assertIn('sourceAccount="source-account-123"', raw)
         self.assertNotIn("siriusxm/proxy/big80s/playlist.m3u8", raw)
         self.assertEqual(channels, [])
+
+    def test_normalize_siriusxm_content_item_location_removes_display_name_hint(self) -> None:
+        raw = (
+            '<ContentItem source="SIRIUSXM_EVEREST" type="stationurl" '
+            'location="/playback/station/big80s?preset_play=True&amp;name=80s+on+8" '
+            'sourceAccount="source-account-123" isPresetable="true">'
+            "<itemName>80s on 8</itemName></ContentItem>"
+        )
+
+        normalized = normalize_siriusxm_content_item_location(raw)
+
+        self.assertIn('location="/playback/station/big80s?preset_play=True"', normalized)
+        self.assertNotIn("name=80s+on+8", normalized)
+        self.assertIn('sourceAccount="source-account-123"', normalized)
+
+    def test_prepare_admin_preset_normalizes_preserved_siriusxm_display_name_hint(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Store(os.path.join(tmp, "state.sqlite3"))
+            try:
+                preset = prepare_admin_preset(
+                    store,
+                    "speaker-1",
+                    {
+                        "source": "SIRIUSXM",
+                        "name": "80s on 8",
+                        "station_id": "big80s?preset_play=True",
+                        "raw_content_item": (
+                            '<ContentItem source="SIRIUSXM_EVEREST" type="stationurl" '
+                            'location="/playback/station/big80s?preset_play=True&amp;name=80s+on+8" '
+                            'sourceAccount="source-account-123" isPresetable="true">'
+                            "<itemName>80s on 8</itemName></ContentItem>"
+                        ),
+                    },
+                    1,
+                )
+            finally:
+                store.conn.close()
+
+        self.assertEqual(preset["station_id"], "big80s")
+        self.assertIn('location="/playback/station/big80s?preset_play=True"', preset["raw_content_item"])
+        self.assertNotIn("name=80s+on+8", preset["raw_content_item"])
 
     def test_siriusxm_station_uses_display_name_hint_when_channel_is_not_persisted(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
