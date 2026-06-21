@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import re
+import secrets
 import socket
 import time
 import threading
@@ -64,6 +65,7 @@ MAX_JSON_REQUEST_BYTES = 1024 * 1024
 MAX_REQUEST_BODY_BYTES = 1024 * 1024
 MAX_DIAGNOSTIC_BODY_CHARS = 64 * 1024
 MAX_SIRIUSXM_FETCH_BYTES = 8 * 1024 * 1024
+DIAGNOSTIC_TOKEN_ENV = "SOUNDTOUCH_BRIDGE_DIAGNOSTIC_TOKEN"
 
 
 class PayloadTooLarge(ValueError):
@@ -177,6 +179,7 @@ class SoundTouchBridgeServer(ThreadingHTTPServer):
         super().__init__(addr, SoundTouchBridgeHandler)
         self.store = store
         self.public_base = public_base.rstrip("/")
+        self.diagnostic_token = os.environ.get(DIAGNOSTIC_TOKEN_ENV, "").strip()
         siriusxm_env_file = os.environ.get("SOUNDTOUCH_BRIDGE_SIRIUSXM_ENV_FILE") or DEFAULT_ENV_FILE
         self.siriusxm = SiriusXmSession.from_env(siriusxm_env_file)
         self.siriusxm_proxy_urls: dict[str, str] = {}
@@ -321,6 +324,8 @@ def handle_import_presets(req: SoundTouchBridgeHandler, device_id: str) -> None:
 
 
 def handle_speaker_events(req: SoundTouchBridgeHandler, device_id: str) -> None:
+    if not require_diagnostic_auth(req):
+        return
     speaker = req.server.store.get_speaker(device_id)
     if not speaker:
         req.send_json({"error": "unknown speaker"}, 404)
@@ -349,6 +354,8 @@ def handle_play_station(req: SoundTouchBridgeHandler, device_id: str) -> None:
 
 
 def handle_cloud_responses(req: SoundTouchBridgeHandler, account_id: str) -> None:
+    if not require_diagnostic_auth(req):
+        return
     query = urlparse(req.path).query
     raw = "raw=1" in query or "raw=true" in query.lower()
     responses = req.server.store.recent_cloud_responses(account_id)
@@ -361,6 +368,34 @@ def handle_cloud_responses(req: SoundTouchBridgeHandler, account_id: str) -> Non
             for response in responses
         ]
     req.send_json({"account_id": account_id, "redacted": not raw, "responses": responses})
+
+
+def diagnostic_token_from_request(req: SoundTouchBridgeHandler) -> str:
+    header_token = str(req.headers.get("X-SoundTouch-Bridge-Token", "")).strip()
+    if header_token:
+        return header_token
+    authorization = str(req.headers.get("Authorization", "")).strip()
+    if authorization.lower().startswith("bearer "):
+        return authorization[7:].strip()
+    return ""
+
+
+def require_diagnostic_auth(req: SoundTouchBridgeHandler) -> bool:
+    configured = str(getattr(req.server, "diagnostic_token", "") or "").strip()
+    if not configured:
+        req.send_json(
+            {
+                "error": "diagnostics_disabled",
+                "message": f"Set {DIAGNOSTIC_TOKEN_ENV} to enable diagnostic endpoints.",
+            },
+            403,
+        )
+        return False
+    presented = diagnostic_token_from_request(req)
+    if not presented or not secrets.compare_digest(configured, presented):
+        req.send_json({"error": "unauthorized", "message": "Diagnostic token required."}, 401)
+        return False
+    return True
 
 
 def handle_get_presets(req: SoundTouchBridgeHandler, device_id: str) -> None:
@@ -2198,7 +2233,9 @@ def capture_cloud_response(req: SoundTouchBridgeHandler, account_id: str, body: 
 def redact_cloud_response(body: str) -> str:
     body = re.sub(r'(sourceAccount=")[^"]*(")', r"\1[redacted]\2", body)
     body = re.sub(r"(<username>)[a-fA-F0-9]{16,}(</username>)", r"\1[redacted]\2", body)
+    body = re.sub(r"(<username>)[^<@\s]+@[^<\s]+(</username>)", r"\1[redacted]\2", body)
     body = re.sub(r'("(?:streamUrl|url)"\s*:\s*")[^"]*(")', r"\1[redacted]\2", body)
+    body = re.sub(r"([?&](?:token|gupId|password|username)=)[^&\s\"'<>]+", r"\1[redacted]", body, flags=re.I)
     return body
 
 

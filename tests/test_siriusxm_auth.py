@@ -44,7 +44,9 @@ from soundtouch_bridge.server import (
     build_siriusxm_display_experiment_content_item,
     build_siriusxm_content_item,
     drain_request_body,
+    handle_cloud_responses,
     handle_scmudc,
+    handle_speaker_events,
     rewrite_siriusxm_preset_content_item,
     handle_siriusxm_now_playing_debug,
     handle_tunein_station,
@@ -65,6 +67,7 @@ from soundtouch_bridge.server import (
     remember_siriusxm_station_alias,
     resolve_siriusxm_stream_url,
     resolve_siriusxm_station_alias,
+    redact_cloud_response,
     sanitize_siriusxm_error,
     search_iheart_stations,
     search_tunein_stations,
@@ -131,6 +134,106 @@ class SiriusXmAuthTests(unittest.TestCase):
         self.assertLess(len(events[0]["body"]), len(body))
         self.assertLessEqual(len(events[0]["body"]), MAX_DIAGNOSTIC_BODY_CHARS)
         self.assertIn("[truncated", events[0]["body"])
+
+    def test_diagnostic_events_require_configured_token(self) -> None:
+        req = SimpleNamespace(
+            headers={},
+            server=SimpleNamespace(diagnostic_token="", store=SimpleNamespace()),
+            sent_json=None,
+            status=0,
+        )
+        req.send_json = lambda body, status=200: (setattr(req, "sent_json", body), setattr(req, "status", status))
+
+        handle_speaker_events(req, "speaker-1")
+
+        self.assertEqual(req.status, 403)
+        self.assertEqual(req.sent_json["error"], "diagnostics_disabled")
+
+    def test_diagnostic_events_reject_wrong_token(self) -> None:
+        req = SimpleNamespace(
+            headers={"Authorization": "Bearer wrong"},
+            server=SimpleNamespace(diagnostic_token="correct", store=SimpleNamespace()),
+            sent_json=None,
+            status=0,
+        )
+        req.send_json = lambda body, status=200: (setattr(req, "sent_json", body), setattr(req, "status", status))
+
+        handle_speaker_events(req, "speaker-1")
+
+        self.assertEqual(req.status, 401)
+        self.assertEqual(req.sent_json["error"], "unauthorized")
+
+    def test_diagnostic_events_allow_valid_token(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Store(os.path.join(tmp, "state.sqlite3"))
+            store.upsert_speaker({"device_id": "speaker-1", "ip": "192.168.1.50", "name": "STS1"})
+            store.add_scmudc_event("speaker-1", "preset-pressed", "<event>private</event>")
+            req = SimpleNamespace(
+                headers={"X-SoundTouch-Bridge-Token": "correct"},
+                server=SimpleNamespace(diagnostic_token="correct", store=store),
+                sent_json=None,
+                status=0,
+            )
+            req.send_json = lambda body, status=200: (setattr(req, "sent_json", body), setattr(req, "status", status))
+            try:
+                handle_speaker_events(req, "speaker-1")
+            finally:
+                store.conn.close()
+
+        self.assertEqual(req.status, 200)
+        self.assertEqual(req.sent_json["events"][0]["body"], "<event>private</event>")
+
+    def test_cloud_response_diagnostics_require_token_even_for_redacted_output(self) -> None:
+        req = SimpleNamespace(
+            headers={},
+            path="/api/accounts/35254/cloud-responses",
+            server=SimpleNamespace(diagnostic_token="correct", store=SimpleNamespace()),
+            sent_json=None,
+            status=0,
+        )
+        req.send_json = lambda body, status=200: (setattr(req, "sent_json", body), setattr(req, "status", status))
+
+        handle_cloud_responses(req, "35254")
+
+        self.assertEqual(req.status, 401)
+        self.assertEqual(req.sent_json["error"], "unauthorized")
+
+    def test_cloud_response_raw_output_requires_valid_token(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Store(os.path.join(tmp, "state.sqlite3"))
+            store.add_cloud_response(
+                "35254",
+                "/streaming/account/35254/full",
+                "192.168.1.50",
+                '<username>listener@example.com</username><url>https://example.test/play?token=secret</url>',
+            )
+            req = SimpleNamespace(
+                headers={"Authorization": "Bearer correct"},
+                path="/api/accounts/35254/cloud-responses?raw=1",
+                server=SimpleNamespace(diagnostic_token="correct", store=store),
+                sent_json=None,
+                status=0,
+            )
+            req.send_json = lambda body, status=200: (setattr(req, "sent_json", body), setattr(req, "status", status))
+            try:
+                handle_cloud_responses(req, "35254")
+            finally:
+                store.conn.close()
+
+        self.assertEqual(req.status, 200)
+        self.assertFalse(req.sent_json["redacted"])
+        self.assertIn("listener@example.com", req.sent_json["responses"][0]["body"])
+
+    def test_redacted_cloud_response_hides_email_usernames_and_query_tokens(self) -> None:
+        redacted = redact_cloud_response(
+            '<username>listener@example.com</username>'
+            '<url>https://example.test/play?token=secret&gupId=abc</url>'
+        )
+
+        self.assertNotIn("listener@example.com", redacted)
+        self.assertNotIn("token=secret", redacted)
+        self.assertNotIn("gupId=abc", redacted)
+        self.assertIn("<username>[redacted]</username>", redacted)
 
     def test_load_credentials_from_env_file_and_redacts_status(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

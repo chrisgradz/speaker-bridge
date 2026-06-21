@@ -30,6 +30,11 @@ sudo chown root:soundtouch /etc/soundtouch-bridge/siriusxm.env
 sudo chmod 640 /etc/soundtouch-bridge/siriusxm.env
 ```
 
+Diagnostic endpoints that expose stored speaker events or cloud responses are
+disabled unless `SOUNDTOUCH_BRIDGE_DIAGNOSTIC_TOKEN` is set. Send the token as
+`Authorization: Bearer <token>` or `X-SoundTouch-Bridge-Token: <token>` when
+debugging.
+
 Never commit real credentials, speaker preset exports, account IDs, device IDs,
 cookies, or browser session captures.
 

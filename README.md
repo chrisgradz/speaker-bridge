@@ -77,6 +77,9 @@ sudo chown root:soundtouch /etc/soundtouch-bridge/siriusxm.env
 sudo chmod 640 /etc/soundtouch-bridge/siriusxm.env
 ```
 
+Optional diagnostic endpoints require `SOUNDTOUCH_BRIDGE_DIAGNOSTIC_TOKEN`.
+Set it to a long random value before using event/cloud-response debug APIs.
+
 ## Network Notes
 
 The Ubuntu server should have a stable LAN IP. If the bridge IP changes, the
