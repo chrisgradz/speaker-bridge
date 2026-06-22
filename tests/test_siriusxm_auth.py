@@ -22,6 +22,7 @@ from soundtouch_bridge.cloud import (
 from soundtouch_bridge.siriusxm import (
     DEFAULT_ENV_FILE,
     SiriusXmCredentials,
+    SiriusXmError,
     SiriusXmSession,
     extract_entity_id,
     extract_now_playing,
@@ -1034,6 +1035,46 @@ class SiriusXmAuthTests(unittest.TestCase):
         self.assertEqual(session.refresh_calls, 2)
         if session.error:
             session.error.close()
+
+    def test_server_forced_refresh_relogs_in_after_missing_playlist_error(self) -> None:
+        class FakeSession:
+            credentials = SiriusXmCredentials("listener@example.com", "secret password")
+
+            def __init__(self) -> None:
+                self.refresh_calls = 0
+                self.login_calls = 0
+
+            def refresh_stream_url(self, station_id, channel):
+                self.refresh_calls += 1
+                if self.refresh_calls == 1:
+                    raise SiriusXmError("SiriusXM did not return an HLS playlist URL")
+                return "https://live.example.test/fresh-after-non-http-error.m3u8"
+
+            def login(self):
+                self.login_calls += 1
+
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Store(os.path.join(tmp, "state.sqlite3"))
+            store.upsert_siriusxm_channel(
+                "firstwave",
+                {
+                    "name": "1st Wave",
+                    "entity_url": "https://www.siriusxm.com/player/channel-linear/entity/entity-id",
+                    "stream_url": "https://expired.example.test/old-session.m3u8",
+                },
+            )
+            session = FakeSession()
+
+            try:
+                resolved = resolve_siriusxm_stream_url(store, session, "firstwave", force=True)
+                saved = store.get_siriusxm_channel("firstwave")
+            finally:
+                store.conn.close()
+
+        self.assertEqual(resolved, "https://live.example.test/fresh-after-non-http-error.m3u8")
+        self.assertEqual(saved["stream_url"], "https://live.example.test/fresh-after-non-http-error.m3u8")
+        self.assertEqual(session.login_calls, 1)
+        self.assertEqual(session.refresh_calls, 2)
 
     def test_siriusxm_station_routes_to_proxy_before_stream_url_exists(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -55,7 +55,6 @@ from .siriusxm import (
     SiriusXmError,
     SiriusXmNotConfigured,
     SiriusXmSession,
-    should_refresh_stream,
 )
 
 
@@ -1494,31 +1493,23 @@ def resolve_siriusxm_stream_url(store: Store, session: SiriusXmSession, station_
         try:
             stream_url = session.refresh_stream_url(station_id, channel)
         except Exception as exc:
-            if is_siriusxm_auth_error(exc):
-                try:
-                    session.login()
-                    stream_url = session.refresh_stream_url(station_id, channel)
-                except Exception as retry_exc:
-                    message = sanitize_siriusxm_error(str(retry_exc), session.credentials)
-                    store.update_siriusxm_stream_status(
-                        station_id,
-                        stream_url=None,
-                        last_refresh_error=message,
-                    )
-                    raise SiriusXmError(message) from retry_exc
+            try:
+                session.login()
+                stream_url = session.refresh_stream_url(station_id, channel)
+            except Exception as retry_exc:
+                message = sanitize_siriusxm_error(str(retry_exc), session.credentials)
                 store.update_siriusxm_stream_status(
                     station_id,
-                    stream_url=stream_url,
-                    last_refresh_error="",
+                    stream_url=None,
+                    last_refresh_error=message,
                 )
-                return stream_url
-            message = sanitize_siriusxm_error(str(exc), session.credentials)
+                raise SiriusXmError(message) from retry_exc
             store.update_siriusxm_stream_status(
                 station_id,
-                stream_url=None,
-                last_refresh_error=message,
+                stream_url=stream_url,
+                last_refresh_error="",
             )
-            raise SiriusXmError(message) from exc
+            return stream_url
         store.update_siriusxm_stream_status(
             station_id,
             stream_url=stream_url,
@@ -1534,10 +1525,6 @@ def should_retry_siriusxm_fetch(session: SiriusXmSession, exc: Exception) -> boo
     if not session.credentials.configured:
         return False
     return isinstance(exc, urllib.error.HTTPError)
-
-
-def is_siriusxm_auth_error(exc: Exception) -> bool:
-    return isinstance(exc, urllib.error.HTTPError) and exc.code in (401, 403)
 
 
 def sanitize_siriusxm_error(message: str, credentials: SiriusXmCredentials) -> str:
