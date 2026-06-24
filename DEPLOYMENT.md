@@ -121,9 +121,14 @@ IHEART_SOURCE_ACCOUNT='your-iheart-login-or-source-account'
 Lock down the file:
 
 ```bash
+sudo chown root:soundtouch /etc/speaker-bridge
+sudo chmod 750 /etc/speaker-bridge
 sudo chown root:soundtouch /etc/speaker-bridge/siriusxm.env
 sudo chmod 640 /etc/speaker-bridge/siriusxm.env
 ```
+
+The service runs as the `soundtouch` user. It needs execute permission on the
+`/etc/speaker-bridge` directory and read permission on `siriusxm.env`.
 
 ## 8. Install As A Systemd Service
 

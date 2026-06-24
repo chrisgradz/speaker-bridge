@@ -72,6 +72,8 @@ Start from the example file:
 sudo install -d -m 750 -o root -g soundtouch /etc/speaker-bridge
 sudo cp speaker-bridge.env.example /etc/speaker-bridge/siriusxm.env
 sudo nano /etc/speaker-bridge/siriusxm.env
+sudo chown root:soundtouch /etc/speaker-bridge
+sudo chmod 750 /etc/speaker-bridge
 sudo chown root:soundtouch /etc/speaker-bridge/siriusxm.env
 sudo chmod 640 /etc/speaker-bridge/siriusxm.env
 ```

@@ -26,9 +26,15 @@ Service credentials are read from:
 Recommended permissions:
 
 ```bash
+sudo chown root:soundtouch /etc/speaker-bridge
+sudo chmod 750 /etc/speaker-bridge
 sudo chown root:soundtouch /etc/speaker-bridge/siriusxm.env
 sudo chmod 640 /etc/speaker-bridge/siriusxm.env
 ```
+
+The service user needs directory traverse access to `/etc/speaker-bridge`;
+otherwise startup can fail with a permission error even when `siriusxm.env`
+itself has the correct group and mode.
 
 Diagnostic endpoints that expose stored speaker events or cloud responses are
 disabled unless `SPEAKER_BRIDGE_DIAGNOSTIC_TOKEN` is set. Send the token as
