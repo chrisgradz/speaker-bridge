@@ -57,7 +57,6 @@ SoundTouch speakers store the literal bridge URL.
 - [Deployment guide](DEPLOYMENT.md)
 - [Security policy](SECURITY.md)
 - [Third-party notices](THIRD_PARTY_NOTICES.md)
-- [Public release checklist](docs/PUBLIC_RELEASE_CHECKLIST.md)
 
 ## Configuration
 

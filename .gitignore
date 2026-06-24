@@ -10,3 +10,4 @@ __pycache__/
 *.log
 .env
 siriusxm.env
+.superpowers/
