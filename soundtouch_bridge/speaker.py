@@ -131,6 +131,10 @@ def now_playing_xml(ip: str) -> str:
     return _http_get(f"http://{ip}:{BOSE_BMX_PORT}/now_playing", timeout=4).decode("utf-8", "replace")
 
 
+def volume_xml(ip: str) -> str:
+    return _http_get(f"http://{ip}:{BOSE_BMX_PORT}/volume", timeout=4).decode("utf-8", "replace")
+
+
 def press_speaker_key(ip: str, key: str) -> None:
     key = key.strip().upper()
     if not re.fullmatch(r"[A-Z0-9_]+", key):

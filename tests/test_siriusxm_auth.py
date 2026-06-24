@@ -77,6 +77,9 @@ from soundtouch_bridge.server import (
     siriusxm_metadata_proxy_debug_payload,
     tunein_icy_debug_payload,
     push_station_to_speaker,
+    speaker_power_control,
+    speaker_status_snapshot,
+    speaker_volume_control,
     truncate_diagnostic_body,
 )
 from soundtouch_bridge.speaker import preset_to_xml, store_preset_xml
@@ -1792,6 +1795,75 @@ class SiriusXmAuthTests(unittest.TestCase):
         self.assertEqual(snapshot["source"], "STANDBY")
         self.assertEqual(snapshot["location"], "")
 
+    def test_speaker_status_snapshot_includes_now_playing_and_volume(self) -> None:
+        speaker = {"device_id": "speaker-1", "ip": "192.168.1.50", "name": "STS1"}
+        with patch(
+            "soundtouch_bridge.server.now_playing_xml",
+            return_value=(
+                '<nowPlaying source="TUNEIN"><ContentItem source="TUNEIN" '
+                'location="/v1/playback/station/s17947"><itemName>The Answer Chicago</itemName>'
+                "</ContentItem><track>Track Name</track><artist>Artist Name</artist>"
+                "<playStatus>PLAY_STATE</playStatus><streamType>RADIO_STREAMING</streamType></nowPlaying>"
+            ),
+        ), patch(
+            "soundtouch_bridge.server.volume_xml",
+            return_value=(
+                '<volume deviceID="speaker-1"><targetvolume>34</targetvolume>'
+                "<actualvolume>33</actualvolume><muteenabled>false</muteenabled></volume>"
+            ),
+        ):
+            status = speaker_status_snapshot(speaker)
+
+        self.assertEqual(status["device_id"], "speaker-1")
+        self.assertEqual(status["name"], "STS1")
+        self.assertEqual(status["now_playing"]["item_name"], "The Answer Chicago")
+        self.assertEqual(status["now_playing"]["track"], "Track Name")
+        self.assertEqual(status["now_playing"]["artist"], "Artist Name")
+        self.assertEqual(status["volume"]["target"], 34)
+        self.assertEqual(status["volume"]["actual"], 33)
+        self.assertEqual(status["volume"]["muted"], False)
+        self.assertEqual(status["power"], "on")
+
+    def test_speaker_power_control_only_presses_power_when_state_changes(self) -> None:
+        speaker = {"device_id": "speaker-1", "ip": "192.168.1.50"}
+        with patch(
+            "soundtouch_bridge.server.now_playing_xml",
+            return_value='<nowPlaying source="STANDBY"><playStatus></playStatus></nowPlaying>',
+        ), patch("soundtouch_bridge.server.volume_xml", return_value="<volume></volume>"), patch(
+            "soundtouch_bridge.server.press_speaker_key"
+        ) as press_key:
+            result = speaker_power_control(speaker, "off")
+
+        press_key.assert_not_called()
+        self.assertEqual(result["changed"], False)
+        self.assertEqual(result["status"]["power"], "standby")
+
+        with patch(
+            "soundtouch_bridge.server.now_playing_xml",
+            return_value='<nowPlaying source="STANDBY"><playStatus></playStatus></nowPlaying>',
+        ), patch("soundtouch_bridge.server.volume_xml", return_value="<volume></volume>"), patch(
+            "soundtouch_bridge.server.press_speaker_key"
+        ) as press_key, patch("soundtouch_bridge.server.time.sleep"):
+            result = speaker_power_control(speaker, "on")
+
+        press_key.assert_called_once_with("192.168.1.50", "POWER")
+        self.assertEqual(result["changed"], True)
+
+    def test_speaker_volume_control_sends_volume_keys(self) -> None:
+        speaker = {"device_id": "speaker-1", "ip": "192.168.1.50"}
+        with patch(
+            "soundtouch_bridge.server.now_playing_xml",
+            return_value='<nowPlaying source="TUNEIN"><playStatus>PLAY_STATE</playStatus></nowPlaying>',
+        ), patch("soundtouch_bridge.server.volume_xml", return_value="<volume></volume>"), patch(
+            "soundtouch_bridge.server.press_speaker_key"
+        ) as press_key, patch("soundtouch_bridge.server.time.sleep"):
+            up = speaker_volume_control(speaker, "up")
+            down = speaker_volume_control(speaker, "down")
+
+        self.assertEqual([call.args for call in press_key.call_args_list], [("192.168.1.50", "VOLUME_UP"), ("192.168.1.50", "VOLUME_DOWN")])
+        self.assertEqual(up["action"], "up")
+        self.assertEqual(down["action"], "down")
+
     def test_tunein_station_returns_audio_stream_shape(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             store = Store(os.path.join(tmp, "state.sqlite3"))
@@ -2296,6 +2368,15 @@ class SiriusXmAuthTests(unittest.TestCase):
         self.assertNotIn("Stream URL", PLAY_HTML)
         self.assertIn("pushStation", PLAY_HTML)
         self.assertIn("wakeSpeaker", PLAY_HTML)
+        self.assertIn("speakerStatus", PLAY_HTML)
+        self.assertIn("refreshSpeakerStatus", PLAY_HTML)
+        self.assertIn("powerOnSpeaker", PLAY_HTML)
+        self.assertIn("powerOffSpeaker", PLAY_HTML)
+        self.assertIn("volumeUpSpeaker", PLAY_HTML)
+        self.assertIn("volumeDownSpeaker", PLAY_HTML)
+        self.assertIn("/status", PLAY_HTML)
+        self.assertIn("/power", PLAY_HTML)
+        self.assertIn("/volume", PLAY_HTML)
         self.assertIn("/api/speakers/", PLAY_HTML)
         self.assertIn("/play", PLAY_HTML)
         self.assertNotIn("/api/experiments/play/speakers/", PLAY_HTML)

@@ -48,6 +48,7 @@ from .speaker import (
     probe_speaker,
     select_content_item,
     store_preset,
+    volume_xml,
 )
 from .siriusxm import (
     DEFAULT_ENV_FILE,
@@ -208,6 +209,9 @@ class SoundTouchBridgeServer(ThreadingHTTPServer):
         self.route("POST", r"/api/speakers/(?P<device_id>[^/]+)/import-presets", handle_import_presets)
         self.route("POST", r"/api/speakers/(?P<device_id>[^/]+)/migrate", handle_migrate)
         self.route("GET", r"/api/speakers/(?P<device_id>[^/]+)/events", handle_speaker_events)
+        self.route("GET", r"/api/speakers/(?P<device_id>[^/]+)/status", handle_speaker_status)
+        self.route("POST", r"/api/speakers/(?P<device_id>[^/]+)/power", handle_speaker_power)
+        self.route("POST", r"/api/speakers/(?P<device_id>[^/]+)/volume", handle_speaker_volume)
         self.route("POST", r"/api/speakers/(?P<device_id>[^/]+)/play", handle_play_station)
         self.route(
             "POST",
@@ -339,6 +343,38 @@ def handle_speaker_events(req: SoundTouchBridgeHandler, device_id: str) -> None:
         req.send_json({"error": "unknown speaker"}, 404)
         return
     req.send_json({"device_id": device_id, "events": req.server.store.recent_scmudc_events(device_id)})
+
+
+def handle_speaker_status(req: SoundTouchBridgeHandler, device_id: str) -> None:
+    speaker = req.server.store.get_speaker(device_id)
+    if not speaker:
+        req.send_json({"error": "unknown speaker"}, 404)
+        return
+    req.send_json(speaker_status_snapshot(speaker))
+
+
+def handle_speaker_power(req: SoundTouchBridgeHandler, device_id: str) -> None:
+    speaker = req.server.store.get_speaker(device_id)
+    if not speaker:
+        req.send_json({"error": "unknown speaker"}, 404)
+        return
+    try:
+        body = req.read_json()
+        req.send_json(speaker_power_control(speaker, str(body.get("action", ""))))
+    except Exception as exc:
+        req.send_json({"error": type(exc).__name__, "message": str(exc)}, 400)
+
+
+def handle_speaker_volume(req: SoundTouchBridgeHandler, device_id: str) -> None:
+    speaker = req.server.store.get_speaker(device_id)
+    if not speaker:
+        req.send_json({"error": "unknown speaker"}, 404)
+        return
+    try:
+        body = req.read_json()
+        req.send_json(speaker_volume_control(speaker, str(body.get("action", ""))))
+    except Exception as exc:
+        req.send_json({"error": type(exc).__name__, "message": str(exc)}, 400)
 
 
 def handle_play_station(req: SoundTouchBridgeHandler, device_id: str) -> None:
@@ -792,9 +828,90 @@ def speaker_now_playing_snapshot(ip: str) -> Json:
         "source": xml_attr(raw, "source") or xml_attr(xml, "source"),
         "location": xml_attr(raw, "location"),
         "item_name": xml_tag(raw, "itemName") or xml_tag(xml, "stationName"),
+        "track": xml_tag(xml, "track"),
+        "artist": xml_tag(xml, "artist"),
+        "album": xml_tag(xml, "album"),
         "play_status": xml_tag(xml, "playStatus"),
         "stream_type": xml_tag(xml, "streamType"),
     }
+
+
+def speaker_status_snapshot(speaker: Json) -> Json:
+    ip = str(speaker.get("ip", "")).strip()
+    now_playing = speaker_now_playing_snapshot(ip) if ip else {"error": "speaker IP is not known"}
+    return {
+        "device_id": speaker.get("device_id", ""),
+        "name": speaker.get("name", ""),
+        "ip": ip,
+        "power": speaker_power_state(now_playing),
+        "now_playing": now_playing,
+        "volume": speaker_volume_snapshot(ip),
+    }
+
+
+def speaker_power_state(now_playing: Json) -> str:
+    if now_playing.get("error"):
+        return "unknown"
+    source = str(now_playing.get("source", "")).upper()
+    if source == "STANDBY":
+        return "standby"
+    if source:
+        return "on"
+    return "unknown"
+
+
+def speaker_volume_snapshot(ip: str) -> Json:
+    if not ip:
+        return {"error": "speaker IP is not known"}
+    try:
+        xml = volume_xml(ip)
+    except Exception as exc:
+        return {"error": f"{type(exc).__name__}: {exc}"}
+    return {
+        "target": parse_int(xml_tag(xml, "targetvolume")),
+        "actual": parse_int(xml_tag(xml, "actualvolume")),
+        "muted": xml_tag(xml, "muteenabled").lower() == "true",
+    }
+
+
+def speaker_power_control(speaker: Json, action: str) -> Json:
+    action = action.strip().lower()
+    if action not in {"on", "off"}:
+        raise ValueError("power action must be on or off")
+    before = speaker_status_snapshot(speaker)
+    ip = str(speaker.get("ip", "")).strip()
+    if not ip:
+        raise ValueError("speaker IP is not known")
+    power = str(before.get("power", "unknown"))
+    should_press = (action == "on" and power == "standby") or (action == "off" and power == "on")
+    if should_press:
+        press_speaker_key(ip, "POWER")
+        time.sleep(0.8)
+    return {
+        "action": action,
+        "changed": should_press,
+        "status": speaker_status_snapshot(speaker) if should_press else before,
+    }
+
+
+def speaker_volume_control(speaker: Json, action: str) -> Json:
+    action = action.strip().lower()
+    keys = {"up": "VOLUME_UP", "down": "VOLUME_DOWN"}
+    if action not in keys:
+        raise ValueError("volume action must be up or down")
+    ip = str(speaker.get("ip", "")).strip()
+    if not ip:
+        raise ValueError("speaker IP is not known")
+    press_speaker_key(ip, keys[action])
+    time.sleep(0.2)
+    return {"action": action, "status": speaker_status_snapshot(speaker)}
+
+
+def parse_int(value: str) -> int | None:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def wait_for_selected_now_playing(ip: str, attempts: int = 5, delay_seconds: float = 0.5) -> Json:
@@ -2438,6 +2555,18 @@ PLAY_HTML = """<!doctype html>
       margin: 12px 0;
       align-items: center;
     }
+    .speaker-status {
+      display: grid;
+      gap: 6px;
+      margin: 12px 0;
+      padding: 10px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: #f8fafc;
+    }
+    .speaker-status strong {
+      color: var(--ink);
+    }
     .source-tabs button.active {
       background: var(--accent);
       border-color: var(--accent);
@@ -2505,6 +2634,17 @@ PLAY_HTML = """<!doctype html>
         <input type="checkbox" id="wakeSpeaker">
         Wake speaker if it is in standby
       </label>
+      <div class="speaker-status" id="speakerStatus">
+        <strong>Speaker status</strong>
+        <span class="meta">Select a speaker, then refresh status.</span>
+      </div>
+      <div class="toolbar">
+        <button class="secondary" id="refreshSpeakerStatus">Status</button>
+        <button class="secondary" id="powerOnSpeaker">On</button>
+        <button class="secondary" id="powerOffSpeaker">Off</button>
+        <button class="secondary" id="volumeDownSpeaker">Volume -</button>
+        <button class="secondary" id="volumeUpSpeaker">Volume +</button>
+      </div>
       <div class="toolbar source-tabs" id="sourceTabs">
         <button data-source="SIRIUSXM" class="active">SiriusXM</button>
         <button data-source="TUNEIN" class="secondary">TuneIn</button>
@@ -2557,6 +2697,39 @@ PLAY_HTML = """<!doctype html>
       if (!state.speakers.length) {
         select.innerHTML = '<option value="">No speakers registered</option>';
       }
+      select.onchange = () => loadSpeakerStatus().catch((err) => setStatus(err.message, 'error'));
+      await loadSpeakerStatus();
+    }
+
+    function currentDeviceId() {
+      return $('speakerSelect').value;
+    }
+
+    async function loadSpeakerStatus() {
+      const deviceId = currentDeviceId();
+      if (!deviceId) {
+        $('speakerStatus').innerHTML = '<strong>Speaker status</strong><span class="meta">No speaker selected.</span>';
+        return;
+      }
+      const data = await api(`/api/speakers/${encodeURIComponent(deviceId)}/status`);
+      renderSpeakerStatus(data);
+    }
+
+    function renderSpeakerStatus(data) {
+      const now = data.now_playing || {};
+      const volume = data.volume || {};
+      const name = data.name || data.device_id || 'Speaker';
+      const item = now.item_name || now.track || now.source || 'Nothing selected';
+      const detail = [now.artist, now.track && now.track !== item ? now.track : '', now.play_status].filter(Boolean).join(' - ');
+      const volumeText = volume.error
+        ? `Volume unavailable`
+        : `Volume ${volume.actual ?? volume.target ?? '?'}${volume.muted ? ' muted' : ''}`;
+      $('speakerStatus').innerHTML = `
+        <strong>${escapeHtml(name)} - ${escapeHtml(data.power || 'unknown')}</strong>
+        <span>${escapeHtml(item)}</span>
+        <span class="meta">${escapeHtml(detail || now.stream_type || '')}</span>
+        <span class="meta">${escapeHtml(volumeText)}</span>
+      `;
     }
 
     function setSource(source) {
@@ -2642,7 +2815,7 @@ PLAY_HTML = """<!doctype html>
     }
 
     async function pushStation(station) {
-      const deviceId = $('speakerSelect').value;
+      const deviceId = currentDeviceId();
       if (!deviceId) {
         setStatus('Select a speaker', 'error');
         return;
@@ -2661,6 +2834,35 @@ PLAY_HTML = """<!doctype html>
         body: JSON.stringify(payload),
       });
       setStatus(data.play && data.play.ok ? `Tried ${payload.name} on speaker` : data.play.message, data.play && data.play.ok ? 'ok' : 'error');
+      await loadSpeakerStatus();
+    }
+
+    async function setSpeakerPower(action) {
+      const deviceId = currentDeviceId();
+      if (!deviceId) {
+        setStatus('Select a speaker', 'error');
+        return;
+      }
+      const data = await api(`/api/speakers/${encodeURIComponent(deviceId)}/power`, {
+        method: 'POST',
+        body: JSON.stringify({ action }),
+      });
+      renderSpeakerStatus(data.status);
+      setStatus(data.changed ? `Speaker turned ${action}` : `Speaker already ${action === 'on' ? 'on' : 'off'}`, 'ok');
+    }
+
+    async function changeSpeakerVolume(action) {
+      const deviceId = currentDeviceId();
+      if (!deviceId) {
+        setStatus('Select a speaker', 'error');
+        return;
+      }
+      const data = await api(`/api/speakers/${encodeURIComponent(deviceId)}/volume`, {
+        method: 'POST',
+        body: JSON.stringify({ action }),
+      });
+      renderSpeakerStatus(data.status);
+      setStatus(action === 'up' ? 'Volume up' : 'Volume down', 'ok');
     }
 
     function escapeHtml(value) {
@@ -2679,6 +2881,11 @@ PLAY_HTML = """<!doctype html>
     };
     $('searchStations').onclick = () => searchStations().catch((err) => setStatus(err.message, 'error'));
     $('loadSirius').onclick = () => loadSirius().catch((err) => setStatus(err.message, 'error'));
+    $('refreshSpeakerStatus').onclick = () => loadSpeakerStatus().catch((err) => setStatus(err.message, 'error'));
+    $('powerOnSpeaker').onclick = () => setSpeakerPower('on').catch((err) => setStatus(err.message, 'error'));
+    $('powerOffSpeaker').onclick = () => setSpeakerPower('off').catch((err) => setStatus(err.message, 'error'));
+    $('volumeUpSpeaker').onclick = () => changeSpeakerVolume('up').catch((err) => setStatus(err.message, 'error'));
+    $('volumeDownSpeaker').onclick = () => changeSpeakerVolume('down').catch((err) => setStatus(err.message, 'error'));
     loadSpeakers().then(() => setSource('SIRIUSXM')).catch((err) => setStatus(err.message, 'error'));
   </script>
 </body>
