@@ -18,7 +18,7 @@ SPEAKER_HOST_RE = re.compile(r"^[A-Za-z0-9.-]+$")
 
 
 def _http_get(url: str, timeout: float = 5.0) -> bytes:
-    req = urllib.request.Request(url, headers={"User-Agent": "soundtouch-bridge/0.1"})
+    req = urllib.request.Request(url, headers={"User-Agent": "speaker-bridge/0.1"})
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         return resp.read()
 
@@ -27,7 +27,7 @@ def _http_post_xml(url: str, body: str, timeout: float = 5.0, content_type: str 
     req = urllib.request.Request(
         url,
         data=body.encode("utf-8"),
-        headers={"User-Agent": "soundtouch-bridge/0.1", "Content-Type": content_type},
+        headers={"User-Agent": "speaker-bridge/0.1", "Content-Type": content_type},
         method="POST",
     )
     with urllib.request.urlopen(req, timeout=timeout) as resp:

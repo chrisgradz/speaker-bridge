@@ -1,6 +1,6 @@
-# SoundTouch Bridge
+# Speaker Bridge
 
-SoundTouch Bridge is a local Ubuntu service for keeping Bose SoundTouch
+Speaker Bridge is a local Ubuntu service for keeping Bose SoundTouch
 speakers usable when the original cloud endpoints are unavailable.
 
 It provides a small local replacement for the SoundTouch cloud APIs, plus
@@ -32,8 +32,8 @@ Install on an Ubuntu server:
 sudo apt update
 sudo apt install -y git python3 curl
 
-git clone git@github.com:chrisgradz/SoundTouch.git
-cd SoundTouch
+git clone git@github.com:chrisgradz/speaker-bridge.git
+cd speaker-bridge
 
 python3 -m soundtouch_bridge \
   --host 0.0.0.0 \
@@ -63,20 +63,20 @@ SoundTouch speakers store the literal bridge URL.
 Authenticated services read credentials from:
 
 ```text
-/etc/soundtouch-bridge/siriusxm.env
+/etc/speaker-bridge/siriusxm.env
 ```
 
 Start from the example file:
 
 ```bash
-sudo install -d -m 750 -o root -g soundtouch /etc/soundtouch-bridge
-sudo cp soundtouch-bridge.env.example /etc/soundtouch-bridge/siriusxm.env
-sudo nano /etc/soundtouch-bridge/siriusxm.env
-sudo chown root:soundtouch /etc/soundtouch-bridge/siriusxm.env
-sudo chmod 640 /etc/soundtouch-bridge/siriusxm.env
+sudo install -d -m 750 -o root -g soundtouch /etc/speaker-bridge
+sudo cp speaker-bridge.env.example /etc/speaker-bridge/siriusxm.env
+sudo nano /etc/speaker-bridge/siriusxm.env
+sudo chown root:soundtouch /etc/speaker-bridge/siriusxm.env
+sudo chmod 640 /etc/speaker-bridge/siriusxm.env
 ```
 
-Optional diagnostic endpoints require `SOUNDTOUCH_BRIDGE_DIAGNOSTIC_TOKEN`.
+Optional diagnostic endpoints require `SPEAKER_BRIDGE_DIAGNOSTIC_TOKEN`.
 Set it to a long random value before using event/cloud-response debug APIs.
 
 ## Network Notes
@@ -108,7 +108,7 @@ python -m unittest discover -s tests
 
 ## Attribution And License
 
-SoundTouch Bridge includes original Ubuntu service work and portions derived
+Speaker Bridge includes original Ubuntu service work and portions derived
 from or informed by public SixBack protocol research.
 
 See:
@@ -117,6 +117,6 @@ See:
 - [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)
 - [licenses/SIXBACK_LICENSE](licenses/SIXBACK_LICENSE)
 
-SoundTouch Bridge is not affiliated with, endorsed by, or sponsored by Bose,
+Speaker Bridge is not affiliated with, endorsed by, or sponsored by Bose,
 SiriusXM, TuneIn, or iHeart. Users are responsible for complying with the terms
 of any services they configure or access through this project.

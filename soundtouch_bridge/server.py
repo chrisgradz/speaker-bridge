@@ -64,7 +64,8 @@ MAX_JSON_REQUEST_BYTES = 1024 * 1024
 MAX_REQUEST_BODY_BYTES = 1024 * 1024
 MAX_DIAGNOSTIC_BODY_CHARS = 64 * 1024
 MAX_SIRIUSXM_FETCH_BYTES = 8 * 1024 * 1024
-DIAGNOSTIC_TOKEN_ENV = "SOUNDTOUCH_BRIDGE_DIAGNOSTIC_TOKEN"
+DIAGNOSTIC_TOKEN_ENV = "SPEAKER_BRIDGE_DIAGNOSTIC_TOKEN"
+LEGACY_DIAGNOSTIC_TOKEN_ENV = "SOUNDTOUCH_BRIDGE_DIAGNOSTIC_TOKEN"
 
 
 class PayloadTooLarge(ValueError):
@@ -178,8 +179,16 @@ class SoundTouchBridgeServer(ThreadingHTTPServer):
         super().__init__(addr, SoundTouchBridgeHandler)
         self.store = store
         self.public_base = public_base.rstrip("/")
-        self.diagnostic_token = os.environ.get(DIAGNOSTIC_TOKEN_ENV, "").strip()
-        siriusxm_env_file = os.environ.get("SOUNDTOUCH_BRIDGE_SIRIUSXM_ENV_FILE") or DEFAULT_ENV_FILE
+        self.diagnostic_token = (
+            os.environ.get(DIAGNOSTIC_TOKEN_ENV)
+            or os.environ.get(LEGACY_DIAGNOSTIC_TOKEN_ENV)
+            or ""
+        ).strip()
+        siriusxm_env_file = (
+            os.environ.get("SPEAKER_BRIDGE_SIRIUSXM_ENV_FILE")
+            or os.environ.get("SOUNDTOUCH_BRIDGE_SIRIUSXM_ENV_FILE")
+            or DEFAULT_ENV_FILE
+        )
         self.siriusxm = SiriusXmSession.from_env(siriusxm_env_file)
         self.siriusxm_proxy_urls: dict[str, str] = {}
         self.siriusxm_fetch_cache: dict[str, tuple[float, bytes]] = {}
@@ -279,8 +288,8 @@ class SoundTouchBridgeServer(ThreadingHTTPServer):
 
 def handle_root(req: SoundTouchBridgeHandler) -> None:
     req.send_text(
-        '<!doctype html><html><head><meta charset="utf-8"><title>SoundTouch Bridge</title></head>'
-        '<body><h1>SoundTouch Bridge</h1><p><a href="/admin">Admin</a> <a href="/play">Play</a></p></body></html>',
+        '<!doctype html><html><head><meta charset="utf-8"><title>Speaker Bridge</title></head>'
+        '<body><h1>Speaker Bridge</h1><p><a href="/admin">Admin</a> <a href="/play">Play</a></p></body></html>',
         content_type="text/html; charset=utf-8",
     )
 
@@ -370,7 +379,11 @@ def handle_cloud_responses(req: SoundTouchBridgeHandler, account_id: str) -> Non
 
 
 def diagnostic_token_from_request(req: SoundTouchBridgeHandler) -> str:
-    header_token = str(req.headers.get("X-SoundTouch-Bridge-Token", "")).strip()
+    header_token = str(
+        req.headers.get("X-Speaker-Bridge-Token")
+        or req.headers.get("X-SoundTouch-Bridge-Token")
+        or ""
+    ).strip()
     if header_token:
         return header_token
     authorization = str(req.headers.get("Authorization", "")).strip()
@@ -1642,7 +1655,7 @@ def handle_siriusxm_proxy_playlist_impl(req: SoundTouchBridgeHandler, station_id
                 {
                     "error": "siriusxm_not_configured",
                     "station_id": station_id,
-                    "message": "Create /etc/soundtouch-bridge/siriusxm.env with SIRIUSXM_USERNAME and SIRIUSXM_PASSWORD.",
+                    "message": "Create /etc/speaker-bridge/siriusxm.env with SIRIUSXM_USERNAME and SIRIUSXM_PASSWORD.",
                 },
                 501,
             )
@@ -2257,7 +2270,7 @@ def handle_device_add(req: SoundTouchBridgeHandler, account_id: str) -> None:
     req.send_response(201)
     req.send_header("Content-Type", "application/vnd.bose.streaming-v1.2+xml")
     req.send_header("Content-Length", str(len(response)))
-    req.send_header("Credentials", "Bearer soundtouch-bridge-token")
+    req.send_header("Credentials", "Bearer speaker-bridge-token")
     if device_id:
         req.send_header(
             "Location",
@@ -2323,7 +2336,7 @@ PLAY_HTML = """<!doctype html>
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>SoundTouch Bridge Play To Speaker</title>
+  <title>Speaker Bridge Play To Speaker</title>
   <style>
     :root {
       color-scheme: light;
@@ -2478,7 +2491,7 @@ PLAY_HTML = """<!doctype html>
 </head>
 <body>
   <header>
-    <h1>SoundTouch Bridge</h1>
+    <h1>Speaker Bridge</h1>
     <nav><a href="/admin">Presets</a></nav>
   </header>
   <main>
@@ -2678,7 +2691,7 @@ ADMIN_HTML = """<!doctype html>
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>SoundTouch Bridge</title>
+  <title>Speaker Bridge</title>
   <style>
     :root {
       color-scheme: light;
@@ -2846,7 +2859,7 @@ ADMIN_HTML = """<!doctype html>
 </head>
 <body>
   <header>
-    <h1>SoundTouch Bridge</h1>
+    <h1>Speaker Bridge</h1>
     <div class="meta"><a href="/play">Play</a> <span id="serverMeta"></span></div>
   </header>
   <main>
@@ -2970,7 +2983,7 @@ ADMIN_HTML = """<!doctype html>
       const error = session.last_error ? ` - ${session.last_error}` : '';
       const el = $('siriusStatus');
       if (!session.configured) {
-        el.textContent = 'Missing /etc/soundtouch-bridge/siriusxm.env';
+        el.textContent = 'Missing /etc/speaker-bridge/siriusxm.env';
         el.className = 'meta status warn';
       } else if (session.session_authenticated) {
         el.textContent = `Ready${username}${error}`;
@@ -3537,17 +3550,17 @@ def guess_lan_ip() -> str:
 
 
 def main(argv: list[str] | None = None) -> None:
-    parser = argparse.ArgumentParser(description="SoundTouch Bridge")
+    parser = argparse.ArgumentParser(description="Speaker Bridge")
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=8000)
-    parser.add_argument("--db", default=str(Path.home() / ".local/share/soundtouch-bridge/state.sqlite3"))
+    parser.add_argument("--db", default=str(Path.home() / ".local/share/speaker-bridge/state.sqlite3"))
     parser.add_argument("--public-base", default="")
     args = parser.parse_args(argv)
 
     public_base = args.public_base or f"http://{guess_lan_ip()}:{args.port}"
     store = Store(args.db)
     server = SoundTouchBridgeServer((args.host, args.port), store, public_base)
-    print(f"soundtouch-bridge listening on {args.host}:{args.port}")
+    print(f"speaker-bridge listening on {args.host}:{args.port}")
     print(f"speaker cloud base: {public_base}")
     print(f"sqlite state: {args.db}")
     server.serve_forever()

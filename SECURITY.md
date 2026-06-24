@@ -2,7 +2,7 @@
 
 ## Intended Deployment
 
-SoundTouch Bridge is intended for trusted home or lab LAN use only. Do not
+Speaker Bridge is intended for trusted home or lab LAN use only. Do not
 expose the bridge directly to the public internet.
 
 The bridge can:
@@ -20,19 +20,19 @@ VPN, or reverse proxy access controls if you need remote access.
 Service credentials are read from:
 
 ```text
-/etc/soundtouch-bridge/siriusxm.env
+/etc/speaker-bridge/siriusxm.env
 ```
 
 Recommended permissions:
 
 ```bash
-sudo chown root:soundtouch /etc/soundtouch-bridge/siriusxm.env
-sudo chmod 640 /etc/soundtouch-bridge/siriusxm.env
+sudo chown root:soundtouch /etc/speaker-bridge/siriusxm.env
+sudo chmod 640 /etc/speaker-bridge/siriusxm.env
 ```
 
 Diagnostic endpoints that expose stored speaker events or cloud responses are
-disabled unless `SOUNDTOUCH_BRIDGE_DIAGNOSTIC_TOKEN` is set. Send the token as
-`Authorization: Bearer <token>` or `X-SoundTouch-Bridge-Token: <token>` when
+disabled unless `SPEAKER_BRIDGE_DIAGNOSTIC_TOKEN` is set. Send the token as
+`Authorization: Bearer <token>` or `X-Speaker-Bridge-Token: <token>` when
 debugging.
 
 Never commit real credentials, speaker preset exports, account IDs, device IDs,

@@ -75,7 +75,7 @@ def account_full(store: Store, account_id: str) -> bytes:
     devices = "".join(_device_xml(store, speaker) for speaker in speakers)
     xml = (
         '<?xml version="1.0" standalone="yes"?>'
-        f"<account><id>{escape(account_id or 'soundtouch-bridge-local')}</id>"
+        f"<account><id>{escape(account_id or 'speaker-bridge-local')}</id>"
         "<accountStatus>ACTIVE</accountStatus><mode>NORMAL</mode>"
         "<preferredLanguage>en-US</preferredLanguage>"
         "<providerSettings/>"
@@ -144,11 +144,18 @@ def sources_xml(store: Store | None = None, account_id: str = "") -> str:
 
 def configured_iheart_source_account(path: str = "", environ: dict[str, str] | None = None) -> str:
     env = os.environ if environ is None else environ
-    env_path = path or env.get("SOUNDTOUCH_BRIDGE_SIRIUSXM_ENV_FILE") or DEFAULT_ENV_FILE
+    env_path = (
+        path
+        or env.get("SPEAKER_BRIDGE_SIRIUSXM_ENV_FILE")
+        or env.get("SOUNDTOUCH_BRIDGE_SIRIUSXM_ENV_FILE")
+        or DEFAULT_ENV_FILE
+    )
     values = parse_env_file(env_path)
     return (
-        env.get("SOUNDTOUCH_BRIDGE_IHEART_SOURCE_ACCOUNT")
+        env.get("SPEAKER_BRIDGE_IHEART_SOURCE_ACCOUNT")
+        or env.get("SOUNDTOUCH_BRIDGE_IHEART_SOURCE_ACCOUNT")
         or env.get("IHEART_SOURCE_ACCOUNT")
+        or values.get("SPEAKER_BRIDGE_IHEART_SOURCE_ACCOUNT")
         or values.get("SOUNDTOUCH_BRIDGE_IHEART_SOURCE_ACCOUNT")
         or values.get("IHEART_SOURCE_ACCOUNT", "")
     ).strip()
@@ -170,7 +177,7 @@ def _source_xml(source_id: str, name: str, provider_id: str, source_name: str, u
 
 
 def tunein_token() -> bytes:
-    return b'{"access_token":"soundtouch-bridge-local","token_type":"Bearer","expires_in":31536000}'
+    return b'{"access_token":"speaker-bridge-local","token_type":"Bearer","expires_in":31536000}'
 
 
 def tunein_station(store: Store, station_id: str, base_url: str, display_name: str = "") -> bytes:
@@ -225,7 +232,7 @@ def tunein_station(store: Store, station_id: str, base_url: str, display_name: s
             },
         },
         "_links": {"bmx_reporting": {"href": f"/v1/report?guide_id={station_id}"}},
-        "_meta": {"resolver": "soundtouch-bridge-tunein", "mediaType": resolved.get("media_type", "")},
+        "_meta": {"resolver": "speaker-bridge-tunein", "mediaType": resolved.get("media_type", "")},
     }
     return json.dumps(payload, separators=(",", ":")).encode("utf-8")
 
@@ -248,7 +255,7 @@ def tunein_siriusxm_alias_station(store: Store, old_station_id: str, station_id:
     payload.setdefault("_meta", {})
     payload["_meta"].update(
         {
-            "resolver": "soundtouch-bridge-cross-source-alias",
+            "resolver": "speaker-bridge-cross-source-alias",
             "source": "TUNEIN",
             "targetSource": "SIRIUSXM",
             "targetStationId": station_id,
@@ -258,7 +265,7 @@ def tunein_siriusxm_alias_station(store: Store, old_station_id: str, station_id:
 
 
 def siriusxm_token() -> bytes:
-    return b'{"access_token":"soundtouch-bridge-siriusxm-preserved","token_type":"Bearer","expires_in":31536000}'
+    return b'{"access_token":"speaker-bridge-siriusxm-preserved","token_type":"Bearer","expires_in":31536000}'
 
 
 def siriusxm_availability() -> bytes:
@@ -305,7 +312,7 @@ def siriusxm_station(
             },
         },
         "_meta": {
-            "resolver": "soundtouch-bridge-siriusxm-preserved",
+            "resolver": "speaker-bridge-siriusxm-preserved",
             "entityUrl": channel.get("entity_url") or "",
             "requiresAuthStreamResolver": needs_auth,
         },
@@ -387,7 +394,7 @@ def siriusxm_station_display_experiment(
     payload.setdefault("_meta", {})
     payload["_meta"].update(
         {
-            "resolver": "soundtouch-bridge-siriusxm-display-experiment",
+            "resolver": "speaker-bridge-siriusxm-display-experiment",
             "experiment": "iheart-like-now-playing-fields",
             "hlsTimedMetadata": "id3-prepend",
         }

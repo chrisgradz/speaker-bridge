@@ -1,6 +1,6 @@
 # Third-Party Notices
 
-SoundTouch Bridge is an independent interoperability project for Bose
+Speaker Bridge is an independent interoperability project for Bose
 SoundTouch hardware.
 
 ## SixBack
@@ -16,7 +16,7 @@ in:
 licenses/SIXBACK_LICENSE
 ```
 
-The SoundTouch Bridge license in `LICENSE.md` applies to original SoundTouch
+The Speaker Bridge license in `LICENSE.md` applies to original Speaker
 Bridge additions where those additions are not covered by SixBack or another
 third-party license.
 
@@ -25,9 +25,9 @@ third-party license.
 Bose, SoundTouch, SiriusXM, TuneIn, and iHeart names and marks belong to their
 respective owners.
 
-SoundTouch Bridge is not affiliated with, endorsed by, or sponsored by Bose,
+Speaker Bridge is not affiliated with, endorsed by, or sponsored by Bose,
 SiriusXM, TuneIn, or iHeart.
 
 This project does not grant rights to third-party services, accounts, streams,
 trademarks, or content. Users are responsible for complying with the terms of
-any services they configure or access through SoundTouch Bridge.
+any services they configure or access through Speaker Bridge.

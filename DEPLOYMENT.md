@@ -1,6 +1,6 @@
-# SoundTouch Bridge Deployment Guide
+# Speaker Bridge Deployment Guide
 
-This is the canonical deployment guide for installing SoundTouch Bridge as a
+This is the canonical deployment guide for installing Speaker Bridge as a
 local Bose SoundTouch cloud replacement on Ubuntu.
 
 For a GitHub clone workflow, see [INSTALL_FROM_GITHUB.md](INSTALL_FROM_GITHUB.md).
@@ -29,16 +29,16 @@ IP should not change after migration.
 From GitHub:
 
 ```bash
-git clone git@github.com:chrisgradz/SoundTouch.git
-cd SoundTouch
+git clone git@github.com:chrisgradz/speaker-bridge.git
+cd speaker-bridge
 ```
 
 Or copy from a local checkout:
 
 ```bash
-scp -r soundtouch_bridge LICENSE.md THIRD_PARTY_NOTICES.md licenses user@BRIDGE_IP:~/soundtouch-bridge/
+scp -r soundtouch_bridge LICENSE.md THIRD_PARTY_NOTICES.md licenses user@BRIDGE_IP:~/speaker-bridge/
 ssh user@BRIDGE_IP
-cd ~/soundtouch-bridge
+cd ~/speaker-bridge
 ```
 
 ## 3. Start The Server Manually
@@ -99,15 +99,15 @@ Wait 1-2 minutes after migration before testing preset buttons.
 The credentials file is:
 
 ```text
-/etc/soundtouch-bridge/siriusxm.env
+/etc/speaker-bridge/siriusxm.env
 ```
 
 Create it:
 
 ```bash
-sudo install -d -m 750 -o root -g soundtouch /etc/soundtouch-bridge
-sudo cp soundtouch-bridge.env.example /etc/soundtouch-bridge/siriusxm.env
-sudo nano /etc/soundtouch-bridge/siriusxm.env
+sudo install -d -m 750 -o root -g soundtouch /etc/speaker-bridge
+sudo cp speaker-bridge.env.example /etc/speaker-bridge/siriusxm.env
+sudo nano /etc/speaker-bridge/siriusxm.env
 ```
 
 Set values as needed:
@@ -121,31 +121,31 @@ IHEART_SOURCE_ACCOUNT='your-iheart-login-or-source-account'
 Lock down the file:
 
 ```bash
-sudo chown root:soundtouch /etc/soundtouch-bridge/siriusxm.env
-sudo chmod 640 /etc/soundtouch-bridge/siriusxm.env
+sudo chown root:soundtouch /etc/speaker-bridge/siriusxm.env
+sudo chmod 640 /etc/speaker-bridge/siriusxm.env
 ```
 
 ## 8. Install As A Systemd Service
 
 ```bash
-sudo useradd --system --home /var/lib/soundtouch-bridge --create-home soundtouch 2>/dev/null || true
-sudo install -d -m 755 -o soundtouch -g soundtouch /opt/soundtouch-bridge /var/lib/soundtouch-bridge
-sudo cp -a soundtouch_bridge LICENSE.md THIRD_PARTY_NOTICES.md licenses /opt/soundtouch-bridge/
-sudo chown -R soundtouch:soundtouch /opt/soundtouch-bridge /var/lib/soundtouch-bridge
+sudo useradd --system --home /var/lib/speaker-bridge --create-home soundtouch 2>/dev/null || true
+sudo install -d -m 755 -o soundtouch -g soundtouch /opt/speaker-bridge /var/lib/speaker-bridge
+sudo cp -a soundtouch_bridge LICENSE.md THIRD_PARTY_NOTICES.md licenses /opt/speaker-bridge/
+sudo chown -R soundtouch:soundtouch /opt/speaker-bridge /var/lib/speaker-bridge
 ```
 
-Create `/etc/systemd/system/soundtouch-bridge.service`:
+Create `/etc/systemd/system/speaker-bridge.service`:
 
 ```ini
 [Unit]
-Description=SoundTouch Bridge
+Description=Speaker Bridge
 After=network-online.target
 Wants=network-online.target
 
 [Service]
-WorkingDirectory=/opt/soundtouch-bridge
-EnvironmentFile=-/etc/soundtouch-bridge/siriusxm.env
-ExecStart=/usr/bin/python3 -m soundtouch_bridge --host 0.0.0.0 --port 8000 --public-base http://BRIDGE_IP:8000 --db /var/lib/soundtouch-bridge/state.sqlite3
+WorkingDirectory=/opt/speaker-bridge
+EnvironmentFile=-/etc/speaker-bridge/siriusxm.env
+ExecStart=/usr/bin/python3 -m soundtouch_bridge --host 0.0.0.0 --port 8000 --public-base http://BRIDGE_IP:8000 --db /var/lib/speaker-bridge/state.sqlite3
 Restart=on-failure
 User=soundtouch
 Group=soundtouch
@@ -158,14 +158,14 @@ Enable and start it:
 
 ```bash
 sudo systemctl daemon-reload
-sudo systemctl enable --now soundtouch-bridge
-sudo systemctl status soundtouch-bridge
+sudo systemctl enable --now speaker-bridge
+sudo systemctl status speaker-bridge
 ```
 
 Follow logs:
 
 ```bash
-journalctl -u soundtouch-bridge -f
+journalctl -u speaker-bridge -f
 ```
 
 ## 9. Firewall
@@ -210,5 +210,5 @@ curl -X POST http://BRIDGE_IP:8000/api/siriusxm/session/login
 Check service logs:
 
 ```bash
-journalctl -u soundtouch-bridge -f
+journalctl -u speaker-bridge -f
 ```

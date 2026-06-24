@@ -1,17 +1,17 @@
-# SoundTouch Bridge License And Attribution
+# Speaker Bridge License And Attribution
 
-## SoundTouch Bridge Additions
+## Speaker Bridge Additions
 
 Copyright (c) 2026 Christopher Grzadziel
 
 Permission is hereby granted, free of charge, to any person obtaining a copy of
-the SoundTouch Bridge original additions in this repository and associated
+the Speaker Bridge original additions in this repository and associated
 documentation files, to use, copy, modify, merge, publish, distribute,
 sublicense, and/or sell copies of those original additions, subject to the
 conditions below.
 
 The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the SoundTouch Bridge original additions.
+copies or substantial portions of the Speaker Bridge original additions.
 
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
 IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
@@ -27,16 +27,16 @@ project and includes SixBack protocol/data material. Those portions remain
 subject to the SixBack license terms in
 [`licenses/SIXBACK_LICENSE`](licenses/SIXBACK_LICENSE).
 
-The license grant above applies only to original SoundTouch Bridge additions
+The license grant above applies only to original Speaker Bridge additions
 where they are not covered by the SixBack license or another third-party
 license.
 
 ## Third-Party Services And Trademarks
 
-SoundTouch Bridge is an independent interoperability and recovery project. It
+Speaker Bridge is an independent interoperability and recovery project. It
 is not affiliated with, endorsed by, or sponsored by Bose, SiriusXM, TuneIn, or
 iHeart.
 
 This repository does not grant rights to third-party services, trademarks,
 accounts, streams, or content. Users are responsible for complying with the
-terms of any services they configure or access through SoundTouch Bridge.
+terms of any services they configure or access through Speaker Bridge.

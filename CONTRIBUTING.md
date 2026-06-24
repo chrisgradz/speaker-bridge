@@ -1,6 +1,6 @@
 # Contributing
 
-Thanks for helping improve SoundTouch Bridge.
+Thanks for helping improve Speaker Bridge.
 
 ## Development Setup
 
