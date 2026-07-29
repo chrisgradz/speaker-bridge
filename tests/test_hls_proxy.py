@@ -19,6 +19,7 @@ from soundtouch_bridge.server import (
     refresh_siriusxm_playlist,
     report_response,
     rewrite_hls_playlist,
+    send_siriusxm_playlist_fallback,
     should_capture_siriusxm_playlist_success,
     should_capture_siriusxm_fetch_success,
     summarize_hls_playlist,
@@ -34,6 +35,7 @@ class FakeServer:
     def __init__(self) -> None:
         self.siriusxm_proxy_urls: dict[str, str] = {}
         self.siriusxm_proxy_stations: dict[str, str] = {}
+        self.siriusxm_playlist_fallbacks: dict[tuple[str, bool], tuple[float, bytes]] = {}
 
 
 class FakeProxyRequest:
@@ -42,10 +44,17 @@ class FakeProxyRequest:
         self.server = FakeServer()
         self.sent_json = {}
         self.sent_status = 0
+        self.sent_body = b""
+        self.sent_content_type = ""
 
     def send_json(self, body, status: int = 200) -> None:
         self.sent_json = body
         self.sent_status = status
+
+    def send_bytes(self, body, status: int = 200, content_type: str = "application/octet-stream") -> None:
+        self.sent_body = body
+        self.sent_status = status
+        self.sent_content_type = content_type
 
 
 class HlsProxyTests(unittest.TestCase):
@@ -195,6 +204,34 @@ class HlsProxyTests(unittest.TestCase):
         self.assertEqual(resolve.call_count, 2)
         self.assertEqual(fetch.call_count, 2)
         forbidden.close()
+
+    def test_recent_playlist_fallback_prevents_transient_502(self) -> None:
+        req = FakeProxyRequest("/siriusxm/proxy/firstwave/playlist.m3u8")
+        req.server.siriusxm_playlist_fallbacks = {
+            ("firstwave", False): (100.0, b"#EXTM3U\n#EXTINF:9.75,\n/segment\n")
+        }
+        with (
+            patch("soundtouch_bridge.server.time.time", return_value=125.0),
+            patch("soundtouch_bridge.server.capture_cloud_response") as capture,
+        ):
+            served = send_siriusxm_playlist_fallback(req, "firstwave", False, "temporary timeout")
+
+        self.assertTrue(served)
+        self.assertEqual(req.sent_status, 200)
+        self.assertEqual(req.sent_content_type, "application/x-mpegURL")
+        self.assertTrue(req.sent_body.startswith(b"#EXTM3U"))
+        self.assertIn("served playlist fallback", capture.call_args.args[2])
+
+    def test_expired_playlist_fallback_is_not_served(self) -> None:
+        req = FakeProxyRequest("/siriusxm/proxy/firstwave/playlist.m3u8")
+        req.server.siriusxm_playlist_fallbacks = {
+            ("firstwave", False): (100.0, b"#EXTM3U\n")
+        }
+        with patch("soundtouch_bridge.server.time.time", return_value=161.0):
+            served = send_siriusxm_playlist_fallback(req, "firstwave", False, "temporary timeout")
+
+        self.assertFalse(served)
+        self.assertEqual(req.sent_body, b"")
 
     def test_media_recovery_relogs_when_playlist_works_but_segment_is_rejected(self) -> None:
         session = SimpleNamespace(login_calls=0)

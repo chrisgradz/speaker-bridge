@@ -399,7 +399,8 @@ class SiriusXmAuthTests(unittest.TestCase):
         )
         try:
             self.assertTrue(should_retry_siriusxm_fetch(session, stale_not_found))
-            self.assertFalse(should_retry_siriusxm_fetch(session, urllib.error.URLError("timeout")))
+            self.assertTrue(should_retry_siriusxm_fetch(session, urllib.error.URLError("timeout")))
+            self.assertTrue(should_retry_siriusxm_fetch(session, TimeoutError("timeout")))
         finally:
             stale_not_found.close()
 

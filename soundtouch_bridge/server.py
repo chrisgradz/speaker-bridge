@@ -65,6 +65,7 @@ MAX_JSON_REQUEST_BYTES = 1024 * 1024
 MAX_REQUEST_BODY_BYTES = 1024 * 1024
 MAX_DIAGNOSTIC_BODY_CHARS = 64 * 1024
 MAX_SIRIUSXM_FETCH_BYTES = 8 * 1024 * 1024
+SIRIUSXM_PLAYLIST_FALLBACK_TTL = 60.0
 DIAGNOSTIC_TOKEN_ENV = "SPEAKER_BRIDGE_DIAGNOSTIC_TOKEN"
 LEGACY_DIAGNOSTIC_TOKEN_ENV = "SOUNDTOUCH_BRIDGE_DIAGNOSTIC_TOKEN"
 
@@ -194,6 +195,7 @@ class SoundTouchBridgeServer(ThreadingHTTPServer):
         self.siriusxm_proxy_urls: dict[str, str] = {}
         self.siriusxm_proxy_stations: dict[str, str] = {}
         self.siriusxm_fetch_cache: dict[str, tuple[float, bytes]] = {}
+        self.siriusxm_playlist_fallbacks: dict[tuple[str, bool], tuple[float, bytes]] = {}
         self.routes: list[tuple[str, re.Pattern[str], Callable[..., None]]] = []
         self._register_routes()
 
@@ -1655,7 +1657,7 @@ def resolve_siriusxm_stream_url(store: Store, session: SiriusXmSession, station_
 def should_retry_siriusxm_fetch(session: SiriusXmSession, exc: Exception) -> bool:
     if not session.credentials.configured:
         return False
-    return isinstance(exc, urllib.error.HTTPError)
+    return isinstance(exc, (urllib.error.HTTPError, urllib.error.URLError, TimeoutError))
 
 
 def sanitize_siriusxm_error(message: str, credentials: SiriusXmCredentials) -> str:
@@ -1781,6 +1783,8 @@ def handle_siriusxm_proxy_playlist_impl(req: SoundTouchBridgeHandler, station_id
     except Exception as exc:
         message = sanitize_siriusxm_error(str(exc), req.server.siriusxm.credentials)
         capture_cloud_response(req, "siriusxm", f"authenticated stream refresh failed station={station_id}: {message}")
+        if send_siriusxm_playlist_fallback(req, station_id, inject_metadata, message):
+            return
         req.send_json({"error": "siriusxm_refresh_failed", "message": message}, 502)
         return
     try:
@@ -1797,11 +1801,15 @@ def handle_siriusxm_proxy_playlist_impl(req: SoundTouchBridgeHandler, station_id
             except Exception as retry_exc:
                 message = sanitize_siriusxm_error(str(retry_exc), req.server.siriusxm.credentials)
                 capture_cloud_response(req, "siriusxm", f"authenticated playlist fetch failed station={station_id}: {message}")
+                if send_siriusxm_playlist_fallback(req, station_id, inject_metadata, message):
+                    return
                 req.send_json({"error": "siriusxm_playlist_failed", "message": message}, 502)
                 return
         else:
             message = sanitize_siriusxm_error(str(exc), req.server.siriusxm.credentials)
             capture_cloud_response(req, "siriusxm", f"playlist fetch failed station={station_id}: {message}")
+            if send_siriusxm_playlist_fallback(req, station_id, inject_metadata, message):
+                return
             req.send_json({"error": type(exc).__name__, "message": message}, 502)
             return
     metadata: Json = {}
@@ -1823,7 +1831,9 @@ def handle_siriusxm_proxy_playlist_impl(req: SoundTouchBridgeHandler, station_id
     )
     if should_capture_siriusxm_playlist_success():
         capture_cloud_response(req, "siriusxm", summarize_hls_playlist(station_id, rewritten))
-    req.send_bytes(rewritten.encode("utf-8"), content_type="application/x-mpegURL")
+    rewritten_bytes = rewritten.encode("utf-8")
+    req.server.siriusxm_playlist_fallbacks[(station_id, inject_metadata)] = (time.time(), rewritten_bytes)
+    req.send_bytes(rewritten_bytes, content_type="application/x-mpegURL")
 
 
 def handle_siriusxm_proxy_fetch(req: SoundTouchBridgeHandler, token: str = "") -> None:
@@ -1945,6 +1955,29 @@ def cached_fetch_siriusxm_url(
     return body
 
 
+def send_siriusxm_playlist_fallback(
+    req: SoundTouchBridgeHandler,
+    station_id: str,
+    inject_metadata: bool,
+    reason: str,
+) -> bool:
+    cached = req.server.siriusxm_playlist_fallbacks.get((station_id, inject_metadata))
+    if not cached:
+        return False
+    stored_at, body = cached
+    age = time.time() - stored_at
+    if age < 0 or age > SIRIUSXM_PLAYLIST_FALLBACK_TTL:
+        return False
+    capture_cloud_response(
+        req,
+        "siriusxm",
+        f"served playlist fallback station={station_id} age={age:.1f}s reason={reason}",
+    )
+    print(f"[siriusxm-recovery] station={station_id} served cached playlist age={age:.1f}s")
+    req.send_bytes(body, content_type="application/x-mpegURL")
+    return True
+
+
 def refresh_siriusxm_playlist(
     store: Store,
     session: SiriusXmSession,
@@ -1954,7 +1987,7 @@ def refresh_siriusxm_playlist(
     stream_url = resolve_siriusxm_stream_url(store, session, station_id, force=True)
     try:
         body = cached_fetch_siriusxm_url(stream_url, cache, force=True)
-    except urllib.error.HTTPError:
+    except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError):
         session.login()
         stream_url = resolve_siriusxm_stream_url(store, session, station_id, force=True)
         body = cached_fetch_siriusxm_url(stream_url, cache, force=True)
@@ -1981,7 +2014,7 @@ def recover_siriusxm_media_fetch(
             server.siriusxm_fetch_cache,
             force=True,
         )
-    except urllib.error.HTTPError:
+    except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError):
         server.siriusxm.login()
         playlist_url, playlist = refresh_siriusxm_playlist(
             server.store,
