@@ -192,6 +192,7 @@ class SoundTouchBridgeServer(ThreadingHTTPServer):
         )
         self.siriusxm = SiriusXmSession.from_env(siriusxm_env_file)
         self.siriusxm_proxy_urls: dict[str, str] = {}
+        self.siriusxm_proxy_stations: dict[str, str] = {}
         self.siriusxm_fetch_cache: dict[str, tuple[float, bytes]] = {}
         self.routes: list[tuple[str, re.Pattern[str], Callable[..., None]]] = []
         self._register_routes()
@@ -1787,17 +1788,12 @@ def handle_siriusxm_proxy_playlist_impl(req: SoundTouchBridgeHandler, station_id
     except Exception as exc:
         if should_retry_siriusxm_fetch(req.server.siriusxm, exc):
             try:
-                stream_url = resolve_siriusxm_stream_url(
+                stream_url, body = refresh_siriusxm_playlist(
                     req.server.store,
                     req.server.siriusxm,
                     station_id,
-                    force=True,
-                )
-                body = cached_fetch_siriusxm_url(
-                    stream_url,
                     req.server.siriusxm_fetch_cache,
-                    force=True,
-                ).decode("utf-8", "replace")
+                )
             except Exception as retry_exc:
                 message = sanitize_siriusxm_error(str(retry_exc), req.server.siriusxm.credentials)
                 capture_cloud_response(req, "siriusxm", f"authenticated playlist fetch failed station={station_id}: {message}")
@@ -1851,9 +1847,23 @@ def handle_siriusxm_proxy_fetch(req: SoundTouchBridgeHandler, token: str = "") -
     try:
         body = cached_fetch_siriusxm_url(target, req.server.siriusxm_fetch_cache)
     except Exception as exc:
-        capture_cloud_response(req, "siriusxm", describe_siriusxm_fetch_error(target, exc))
-        req.send_json({"error": type(exc).__name__, "message": str(exc)}, 502)
-        return
+        station_id = req.server.siriusxm_proxy_stations.get(token, "")
+        if station_id and should_retry_siriusxm_fetch(req.server.siriusxm, exc):
+            try:
+                body = recover_siriusxm_media_fetch(req.server, station_id, target)
+                capture_cloud_response(
+                    req,
+                    "siriusxm",
+                    f"recovered expired media station={station_id} path={urlparse(target).path}",
+                )
+            except Exception as retry_exc:
+                capture_cloud_response(req, "siriusxm", describe_siriusxm_fetch_error(target, retry_exc))
+                req.send_json({"error": type(retry_exc).__name__, "message": str(retry_exc)}, 502)
+                return
+        else:
+            capture_cloud_response(req, "siriusxm", describe_siriusxm_fetch_error(target, exc))
+            req.send_json({"error": type(exc).__name__, "message": str(exc)}, 502)
+            return
     content_type = "application/octet-stream"
     lowered = urlparse(target).path.lower()
     if lowered.endswith(".aac"):
@@ -1933,6 +1943,81 @@ def cached_fetch_siriusxm_url(
             if stored_at < cutoff:
                 cache.pop(key, None)
     return body
+
+
+def refresh_siriusxm_playlist(
+    store: Store,
+    session: SiriusXmSession,
+    station_id: str,
+    cache: dict[str, tuple[float, bytes]],
+) -> tuple[str, str]:
+    stream_url = resolve_siriusxm_stream_url(store, session, station_id, force=True)
+    try:
+        body = cached_fetch_siriusxm_url(stream_url, cache, force=True)
+    except urllib.error.HTTPError:
+        session.login()
+        stream_url = resolve_siriusxm_stream_url(store, session, station_id, force=True)
+        body = cached_fetch_siriusxm_url(stream_url, cache, force=True)
+    return stream_url, body.decode("utf-8", "replace")
+
+
+def recover_siriusxm_media_fetch(
+    server: SoundTouchBridgeServer,
+    station_id: str,
+    stale_target: str,
+) -> bytes:
+    playlist_url, playlist = refresh_siriusxm_playlist(
+        server.store,
+        server.siriusxm,
+        station_id,
+        server.siriusxm_fetch_cache,
+    )
+    replacement = matching_hls_target(playlist, playlist_url, stale_target)
+    if not replacement:
+        raise SiriusXmError("SiriusXM refreshed the playlist but the requested media segment is no longer available")
+    try:
+        return cached_fetch_siriusxm_url(
+            replacement,
+            server.siriusxm_fetch_cache,
+            force=True,
+        )
+    except urllib.error.HTTPError:
+        server.siriusxm.login()
+        playlist_url, playlist = refresh_siriusxm_playlist(
+            server.store,
+            server.siriusxm,
+            station_id,
+            server.siriusxm_fetch_cache,
+        )
+        replacement = matching_hls_target(playlist, playlist_url, stale_target)
+        if not replacement:
+            raise SiriusXmError(
+                "SiriusXM refreshed the authenticated playlist but the requested media segment is no longer available"
+            )
+        return cached_fetch_siriusxm_url(
+            replacement,
+            server.siriusxm_fetch_cache,
+            force=True,
+        )
+
+
+def matching_hls_target(playlist: str, playlist_url: str, stale_target: str) -> str:
+    stale_path = urlparse(stale_target).path
+    stale_name = stale_path.rsplit("/", 1)[-1]
+    candidates: list[str] = []
+    for line in playlist.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        candidate = inherit_playlist_auth_query(urljoin(playlist_url, stripped), playlist_url)
+        candidates.append(candidate)
+        if urlparse(candidate).path == stale_path:
+            return candidate
+    if stale_name:
+        for candidate in candidates:
+            if urlparse(candidate).path.rsplit("/", 1)[-1] == stale_name:
+                return candidate
+    return ""
 
 
 def validate_siriusxm_proxy_url(url: str) -> str:
@@ -2137,6 +2222,8 @@ def proxy_url(
     validate_siriusxm_proxy_url(target)
     token = hashlib.sha256(target.encode("utf-8")).hexdigest()[:24]
     server.siriusxm_proxy_urls[token] = target
+    if station_id:
+        server.siriusxm_proxy_stations[token] = station_id
     if inject_metadata and station_id and not is_siriusxm_hls_key(target):
         path = f"/siriusxm/proxy/meta/{urllib.parse.quote(station_id)}/{token}"
     else:

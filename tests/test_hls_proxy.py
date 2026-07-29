@@ -1,6 +1,10 @@
 from __future__ import annotations
 
 import unittest
+import urllib.error
+from io import BytesIO
+from types import SimpleNamespace
+from unittest.mock import patch
 
 from soundtouch_bridge.server import (
     SIRIUSXM_HLS_AES_KEY,
@@ -9,7 +13,10 @@ from soundtouch_bridge.server import (
     handle_siriusxm_proxy_fetch,
     inject_id3_metadata,
     is_siriusxm_hls_key,
+    matching_hls_target,
     normalize_siriusxm_channel,
+    recover_siriusxm_media_fetch,
+    refresh_siriusxm_playlist,
     report_response,
     rewrite_hls_playlist,
     should_capture_siriusxm_playlist_success,
@@ -26,6 +33,7 @@ class FakeServer:
 
     def __init__(self) -> None:
         self.siriusxm_proxy_urls: dict[str, str] = {}
+        self.siriusxm_proxy_stations: dict[str, str] = {}
 
 
 class FakeProxyRequest:
@@ -118,6 +126,7 @@ class HlsProxyTests(unittest.TestCase):
         self.assertNotIn("https://siriusxm-priprodlive.akamaized.net/key", rewritten)
         self.assertNotIn("audio/segment.aac", rewritten)
         self.assertNotIn("http://ubuntu.example:8000", rewritten)
+        self.assertEqual(list(server.siriusxm_proxy_stations.values()), [])
         self.assertEqual(rewritten.count("/siriusxm/proxy/fetch/"), 2)
         self.assertEqual(
             sorted(server.siriusxm_proxy_urls.values()),
@@ -126,6 +135,113 @@ class HlsProxyTests(unittest.TestCase):
                 "https://siriusxm-priprodlive.akamaized.net/live/audio/segment.aac",
             ],
         )
+
+    def test_rewrite_hls_playlist_remembers_station_for_media_recovery(self) -> None:
+        server = FakeServer()
+
+        rewrite_hls_playlist(
+            "#EXTM3U\n#EXTINF:9.75,\naudio/segment-100.aac\n",
+            "https://live-akc-prod-device.streaming.siriusxm.com/v1/session/old/live.m3u8",
+            server,
+            station_id="firstwave",
+        )
+
+        self.assertEqual(list(server.siriusxm_proxy_stations.values()), ["firstwave"])
+
+    def test_matching_hls_target_uses_fresh_session_path_for_same_segment(self) -> None:
+        playlist = "#EXTM3U\n#EXTINF:9.75,\nAAC_Data/firstwave/segment-100.aac\n"
+
+        replacement = matching_hls_target(
+            playlist,
+            "https://live-akc-prod-device.streaming.siriusxm.com/v1/session/new/live.m3u8?token=fresh",
+            "https://live-akc-prod-device.streaming.siriusxm.com/v1/session/old/AAC_Data/firstwave/segment-100.aac?token=stale",
+        )
+
+        self.assertIn("/v1/session/new/AAC_Data/firstwave/segment-100.aac", replacement)
+        self.assertIn("token=fresh", replacement)
+
+    def test_refresh_playlist_relogs_when_first_fresh_url_is_rejected(self) -> None:
+        session = SimpleNamespace(login_calls=0)
+
+        def login() -> None:
+            session.login_calls += 1
+
+        session.login = login
+        forbidden = urllib.error.HTTPError(
+            "https://live.example.test/stale.m3u8",
+            403,
+            "Forbidden",
+            {},
+            BytesIO(b""),
+        )
+        with (
+            patch(
+                "soundtouch_bridge.server.resolve_siriusxm_stream_url",
+                side_effect=[
+                    "https://live.example.test/stale.m3u8",
+                    "https://live.example.test/fresh.m3u8",
+                ],
+            ) as resolve,
+            patch(
+                "soundtouch_bridge.server.cached_fetch_siriusxm_url",
+                side_effect=[forbidden, b"#EXTM3U\n"],
+            ) as fetch,
+        ):
+            url, body = refresh_siriusxm_playlist({}, session, "firstwave", {})
+
+        self.assertEqual(url, "https://live.example.test/fresh.m3u8")
+        self.assertEqual(body, "#EXTM3U\n")
+        self.assertEqual(session.login_calls, 1)
+        self.assertEqual(resolve.call_count, 2)
+        self.assertEqual(fetch.call_count, 2)
+        forbidden.close()
+
+    def test_media_recovery_relogs_when_playlist_works_but_segment_is_rejected(self) -> None:
+        session = SimpleNamespace(login_calls=0)
+
+        def login() -> None:
+            session.login_calls += 1
+
+        session.login = login
+        server = SimpleNamespace(
+            store={},
+            siriusxm=session,
+            siriusxm_fetch_cache={},
+        )
+        stale_playlist = "#EXTM3U\n#EXTINF:9.75,\nsegment-100.aac\n"
+        fresh_playlist = "#EXTM3U\n#EXTINF:9.75,\nsegment-100.aac\n"
+        forbidden = urllib.error.HTTPError(
+            "https://live.example.test/old/segment-100.aac",
+            403,
+            "Forbidden",
+            {},
+            BytesIO(b""),
+        )
+        with (
+            patch(
+                "soundtouch_bridge.server.refresh_siriusxm_playlist",
+                side_effect=[
+                    ("https://live.example.test/old/live.m3u8?token=stale", stale_playlist),
+                    ("https://live.example.test/new/live.m3u8?token=fresh", fresh_playlist),
+                ],
+            ) as refresh,
+            patch(
+                "soundtouch_bridge.server.cached_fetch_siriusxm_url",
+                side_effect=[forbidden, b"fresh audio"],
+            ) as fetch,
+        ):
+            body = recover_siriusxm_media_fetch(
+                server,
+                "firstwave",
+                "https://live.example.test/expired/segment-100.aac?token=expired",
+            )
+
+        self.assertEqual(body, b"fresh audio")
+        self.assertEqual(session.login_calls, 1)
+        self.assertEqual(refresh.call_count, 2)
+        self.assertEqual(fetch.call_count, 2)
+        self.assertIn("token=fresh", fetch.call_args.args[0])
+        forbidden.close()
 
     def test_rewrite_hls_playlist_carries_playlist_auth_query_to_relative_media(self) -> None:
         server = FakeServer()
